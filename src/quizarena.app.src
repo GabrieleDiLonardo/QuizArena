@@ -1,0 +1,11 @@
+{application, quizarena,
+ [{description, "QuizArena distributed core"},
+  {vsn, "0.1.0"},
+  {registered, [quizarena_sup]},
+  {mod, {quizarena_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    mnesia]},
+  {env, []}
+ ]}.
