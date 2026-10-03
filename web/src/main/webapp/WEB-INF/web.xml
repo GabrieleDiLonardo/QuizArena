@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee
+                             https://jakarta.ee/xml/ns/jakartaee/web-app_6_0.xsd"
+         version="6.0">
+
+    <context-param>
+        <param-name>erlangNodeName</param-name>
+        <param-value>quizarena_web@MSI</param-value>
+    </context-param>
+
+    <context-param>
+        <param-name>erlangCookie</param-name>
+        <param-value>quizarena_cookie</param-value>
+    </context-param>
+
+    <context-param>
+        <param-name>erlangBackendNode</param-name>
+        <param-value>quizarena_backend@MSI</param-value>
+    </context-param>
+
+    <listener>
+        <listener-class>
+            it.unipi.dsmt.quizarena.erlang.ErlangContextListener
+        </listener-class>
+    </listener>
+
+</web-app>
