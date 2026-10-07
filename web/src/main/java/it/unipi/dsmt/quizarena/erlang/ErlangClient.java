@@ -40,6 +40,19 @@ public final class ErlangClient implements AutoCloseable {
         return node.node();
     }
 
+    public ErlangGameSession openGameSession(
+            String remoteNode,
+            String gatewayName,
+            ErlangGameSession.Listener listener
+    ) {
+        return new ErlangGameSession(
+                node,
+                remoteNode,
+                gatewayName,
+                listener
+        );
+    }
+
     // Verifica entro il timeout se il nodo Erlang remoto è raggiungibile
     public boolean isReachable(String remoteNode, long timeoutMillis) {
         if (remoteNode == null || remoteNode.isBlank()) {

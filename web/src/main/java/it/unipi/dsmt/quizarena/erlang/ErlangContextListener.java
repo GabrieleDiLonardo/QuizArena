@@ -2,9 +2,12 @@ package it.unipi.dsmt.quizarena.erlang;
 
 import java.io.IOException;
 
+import it.unipi.dsmt.quizarena.web.GameWebSocketEndpoint;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletContextEvent;
 import jakarta.servlet.ServletContextListener;
+import jakarta.websocket.DeploymentException;
+import jakarta.websocket.server.ServerContainer;
 
 public final class ErlangContextListener implements ServletContextListener {
 
@@ -54,9 +57,20 @@ public final class ErlangContextListener implements ServletContextListener {
                     "Erlang gateway " + gatewayName
                     + " reachable: " + gatewayReachable
             );
-        } catch (IOException exception) {
+
+            registerGameWebSocket(
+                    context,
+                    backendNode,
+                    gatewayName
+            );
+        } catch (IOException | DeploymentException | RuntimeException exception) {
+            if (client != null) {
+                client.close();
+                client = null;
+            }
+            context.removeAttribute(CLIENT_ATTRIBUTE);
             throw new IllegalStateException(
-                    "Unable to initialize the Java Erlang node",
+                    "Unable to initialize the QuizArena web application",
                     exception
             );
         }
@@ -85,5 +99,26 @@ public final class ErlangContextListener implements ServletContextListener {
         }
 
         return value;
+    }
+
+    private void registerGameWebSocket(
+            ServletContext context,
+            String backendNode,
+            String gatewayName
+    ) throws DeploymentException {
+        Object attribute = context.getAttribute(
+                ServerContainer.class.getName()
+        );
+        if (!(attribute instanceof ServerContainer serverContainer)) {
+            throw new IllegalStateException(
+                    "Jakarta WebSocket server container is not available"
+            );
+        }
+
+        serverContainer.addEndpoint(GameWebSocketEndpoint.configuration(
+                client,
+                backendNode,
+                gatewayName
+        ));
     }
 }

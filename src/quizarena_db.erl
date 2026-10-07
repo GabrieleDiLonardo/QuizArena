@@ -2,7 +2,8 @@
 -export([init/0,
          %% PIN e sessioni
          claim_pin/2, release_pin/1,
-         open_session/3, close_session/1,
+         open_session/3, abort_session/1, mark_session_started/1,
+         cancel_session/1, close_session/1, finish_session/2,
          %% Storico
          get_history/1,
          %% Quiz CRUD
@@ -131,16 +132,110 @@ open_session(Pin, QuizId, Host) ->
         {aborted, Reason} -> {error, Reason}
     end.
 
-close_session(Pin) ->
+%% Elimina una sessione ancora waiting se la creazione della stanza non è riuscita
+abort_session(Pin) ->
     F = fun() ->
-        case mnesia:read(sessions, Pin) of
-            [{sessions, Pin, QuizId, Host, _Status, StartedAt}] ->
-                mnesia:write({sessions, Pin, QuizId, Host, finished, StartedAt}),
+        case mnesia:read(sessions, Pin, write) of
+            [{sessions, Pin, _QuizId, _Host, waiting, _StartedAt}] ->
+                mnesia:delete({sessions, Pin}),
+                mnesia:delete({session_pins, Pin}),
+                delete_session_questions(Pin),
                 ok;
-            [] -> {error, session_not_found}
+            [{sessions, Pin, _QuizId, _Host, _Status, _StartedAt}] ->
+                {error, session_not_waiting};
+            [] ->
+                {error, session_not_found}
         end
     end,
-    mnesia:transaction(F).
+    case mnesia:transaction(F) of
+        {atomic, Result} -> Result;
+        {aborted, Reason} -> {error, Reason}
+    end.
+
+%% Porta la sessione da waiting a playing quando l'host avvia la partita
+mark_session_started(Pin) ->
+    F = fun() ->
+        case mnesia:read(sessions, Pin, write) of
+            [{sessions, Pin, QuizId, Host, waiting, StartedAt}] ->
+                mnesia:write({sessions, Pin, QuizId, Host,
+                              playing, StartedAt}),
+                ok;
+            [{sessions, Pin, _QuizId, _Host, Status, _StartedAt}] ->
+                {error, {invalid_status, Status}};
+            [] ->
+                {error, session_not_found}
+        end
+    end,
+    transaction_result(F).
+
+%% Segna come cancelled una sessione attiva e rimuove le domande non più necessarie
+cancel_session(Pin) ->
+    F = fun() ->
+        case mnesia:read(sessions, Pin, write) of
+            [{sessions, Pin, QuizId, Host, Status, StartedAt}]
+              when Status =:= waiting; Status =:= playing ->
+                mnesia:write({sessions, Pin, QuizId, Host,
+                              cancelled, StartedAt}),
+                delete_session_questions(Pin),
+                ok;
+            [{sessions, Pin, _QuizId, _Host, Status, _StartedAt}] ->
+                {error, {invalid_status, Status}};
+            [] ->
+                {error, session_not_found}
+        end
+    end,
+    transaction_result(F).
+
+%% Porta una sessione da playing a finished senza salvare nuovi risultati
+close_session(Pin) ->
+    F = fun() ->
+        case mnesia:read(sessions, Pin, write) of
+            [{sessions, Pin, QuizId, Host, playing, StartedAt}] ->
+                mnesia:write({sessions, Pin, QuizId, Host, finished, StartedAt}),
+                ok;
+            [{sessions, Pin, _QuizId, _Host, Status, _StartedAt}] ->
+                {error, {invalid_status, Status}};
+            [] ->
+                {error, session_not_found}
+        end
+    end,
+    transaction_result(F).
+
+%% Salva tutti i risultati e conclude la sessione nella stessa transazione
+finish_session(Pin, PlayerResults) when is_list(PlayerResults) ->
+    F = fun() ->
+        case mnesia:read(sessions, Pin, write) of
+            [{sessions, Pin, QuizId, Host, playing, StartedAt}] ->
+                FinishedAt = erlang:system_time(millisecond),
+                lists:foreach(
+                    fun({Nickname, Score}) ->
+                        mnesia:write({results, Pin, Nickname,
+                                      Score, FinishedAt})
+                    end,
+                    PlayerResults
+                ),
+                mnesia:write({sessions, Pin, QuizId, Host,
+                              finished, StartedAt}),
+                ok;
+            [{sessions, Pin, _QuizId, _Host, Status, _StartedAt}] ->
+                {error, {invalid_status, Status}};
+            [] ->
+                {error, session_not_found}
+        end
+    end,
+    transaction_result(F).
+
+delete_session_questions(Pin) ->
+    SessionQuestions = mnesia:match_object(
+        {session_questions, {Pin, '_'}, '_', '_', '_', '_'}
+    ),
+    lists:foreach(fun mnesia:delete_object/1, SessionQuestions).
+
+transaction_result(F) ->
+    case mnesia:transaction(F) of
+        {atomic, Result} -> Result;
+        {aborted, Reason} -> {error, Reason}
+    end.
 
 %% ---------- Storico ----------
 
