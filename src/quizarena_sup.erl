@@ -16,6 +16,12 @@ init([]) ->
           restart => permanent,
           shutdown => infinity,
           type => supervisor,
-          modules => [room_sup]}
+          modules => [room_sup]},
+        #{id => quizarena_gateway,
+          start => {quizarena_gateway, start_link, []},
+          restart => permanent,
+          shutdown => 5000,
+          type => worker,
+          modules => [quizarena_gateway]}
     ],
     {ok, {SupFlags, Children}}.

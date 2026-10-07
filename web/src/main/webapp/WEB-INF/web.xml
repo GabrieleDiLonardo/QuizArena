@@ -21,6 +21,11 @@
         <param-value>quizarena_backend@MSI</param-value>
     </context-param>
 
+    <context-param>
+        <param-name>erlangGatewayName</param-name>
+        <param-value>quizarena_gateway</param-value>
+    </context-param>
+
     <listener>
         <listener-class>
             it.unipi.dsmt.quizarena.erlang.ErlangContextListener

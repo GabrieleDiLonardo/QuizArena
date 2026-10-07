@@ -29,15 +29,30 @@ public final class ErlangContextListener implements ServletContextListener {
                 context,
                 "erlangBackendNode"
         );
+        String gatewayName = requireInitParameter(
+                context,
+                "erlangGatewayName"
+        );
 
         try {
             client = new ErlangClient(nodeName, cookie);
             context.setAttribute(CLIENT_ATTRIBUTE, client);
 
-            boolean reachable = client.isReachable(backendNode, 2000);
+            boolean backendReachable = client.isReachable(backendNode, 2000);
             context.log(
                     "Erlang node " + client.getNodeName()
-                    + ", backend reachable: " + reachable
+                    + ", backend reachable: " + backendReachable
+            );
+
+            boolean gatewayReachable = backendReachable
+                    && client.isGatewayReachable(
+                            backendNode,
+                            gatewayName,
+                            2000
+                    );
+            context.log(
+                    "Erlang gateway " + gatewayName
+                    + " reachable: " + gatewayReachable
             );
         } catch (IOException exception) {
             throw new IllegalStateException(

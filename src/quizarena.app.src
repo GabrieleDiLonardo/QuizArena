@@ -1,7 +1,7 @@
 {application, quizarena,
  [{description, "QuizArena distributed core"},
   {vsn, "0.1.0"},
-  {registered, [quizarena_sup]},
+  {registered, [quizarena_sup, quizarena_gateway]},
   {mod, {quizarena_app, []}},
   {applications,
    [kernel,
