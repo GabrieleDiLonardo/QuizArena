@@ -1,39 +1,243 @@
+/* ===== Base ===== */
+* { box-sizing: border-box; }
+
 body {
-    font-family: -apple-system, Segoe UI, sans-serif;
-    margin: 0; padding: 20px;
-    background: #f5f7fb; color: #222;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background: #f5f7fb;
+    color: #222;
+    line-height: 1.5;
 }
-.container { max-width: 700px; margin: 0 auto; background: white;
-    padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.08); }
-h1 { color: #4b3f99; margin-top: 0; }
-h2 { color: #4b3f99; font-size: 20px; }
+
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    background: white;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, .08);
+}
+
+h1 { color: #4b3f99; margin-top: 0; font-size: 32px; }
+h2 { color: #4b3f99; font-size: 20px; margin-top: 24px; }
+h3 { color: #4b3f99; font-size: 17px; margin-top: 20px; }
+
+p { margin: 8px 0; }
+
+a { color: #4b3f99; }
+
+/* ===== Buttons ===== */
 .btn, button {
-    display: inline-block; padding: 12px 20px; margin: 8px 8px 8px 0;
-    background: #4b3f99; color: white; border: none; border-radius: 8px;
-    text-decoration: none; cursor: pointer; font-size: 15px;
+    display: inline-block;
+    padding: 12px 20px;
+    margin: 8px 8px 8px 0;
+    background: #4b3f99;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 15px;
+    font-family: inherit;
+    transition: background .15s;
 }
+
 .btn:hover, button:hover { background: #6353c9; }
 button:disabled { background: #ccc; cursor: not-allowed; }
-input {
-    padding: 10px; margin: 5px 0; border: 1px solid #ccc;
-    border-radius: 6px; font-size: 15px; width: 100%; box-sizing: border-box;
+button:disabled:hover { background: #ccc; }
+
+.btn.disabled {
+    background: #ccc;
+    cursor: not-allowed;
+    pointer-events: none;
 }
+
+/* ===== Inputs ===== */
+input[type="text"], input[type="password"] {
+    padding: 12px;
+    margin: 6px 0;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 15px;
+    width: 100%;
+    font-family: inherit;
+}
+
+input[type="text"]:focus, input[type="password"]:focus {
+    outline: none;
+    border-color: #4b3f99;
+    box-shadow: 0 0 0 3px rgba(75, 63, 153, .15);
+}
+
+/* ===== Menu (home) ===== */
+.menu {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 20px;
+}
+
+.menu .btn {
+    text-align: center;
+    margin: 0;
+}
+
+/* ===== PIN display (host) ===== */
 .pin {
-    font-size: 48px; font-weight: bold; color: #4b3f99;
-    text-align: center; letter-spacing: 8px; padding: 20px;
-    background: #f0edff; border-radius: 12px; margin: 15px 0;
+    font-size: 48px;
+    font-weight: bold;
+    color: #4b3f99;
+    text-align: center;
+    letter-spacing: 8px;
+    padding: 24px;
+    background: #f0edff;
+    border-radius: 12px;
+    margin: 15px 0;
+    font-family: monospace;
 }
-ul, ol { padding-left: 20px; }
+
+/* ===== Lists ===== */
+ul, ol { padding-left: 22px; }
 li { padding: 6px 0; }
+
+/* ===== Answer buttons (play) ===== */
 .answer-btn {
-    display: block; width: 100%; text-align: left;
-    margin: 8px 0; padding: 14px 18px; background: white;
-    color: #222; border: 2px solid #ddd; font-size: 16px;
+    display: block;
+    width: 100%;
+    text-align: left;
+    margin: 8px 0;
+    padding: 14px 18px;
+    background: white;
+    color: #222;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all .15s;
 }
-.answer-btn:hover { border-color: #4b3f99; background: #f8f6ff; }
-.answer-btn.selected { border-color: #4b3f99; background: #e8e3ff; }
+
+.answer-btn:hover:not(:disabled) {
+    border-color: #4b3f99;
+    background: #f8f6ff;
+}
+
+.answer-btn.selected {
+    border-color: #4b3f99;
+    background: #e8e3ff;
+}
+
+.answer-btn:disabled {
+    cursor: not-allowed;
+    opacity: .6;
+}
+
+.answer-btn.selected:disabled {
+    opacity: 1;
+    background: #e8e3ff;
+}
+
+/* ===== Log box (debug) ===== */
 .log {
-    margin-top: 20px; padding: 12px; background: #f0f0f0;
-    border-radius: 6px; font-family: monospace; font-size: 12px;
-    max-height: 200px; overflow-y: auto; color: #555;
+    margin-top: 24px;
+    padding: 12px;
+    background: #f0f0f0;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    color: #555;
+    line-height: 1.4;
+}
+
+.log div { white-space: pre-wrap; word-break: break-word; }
+
+/* ===== Room cards (lobby) ===== */
+.room-card {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 16px;
+    margin: 12px 0;
+    background: #fafafa;
+}
+
+.room-pin {
+    font-size: 28px;
+    font-weight: bold;
+    color: #4b3f99;
+    letter-spacing: 4px;
+    font-family: monospace;
+}
+
+.room-meta {
+    display: flex;
+    gap: 16px;
+    margin: 8px 0;
+    font-size: 14px;
+    color: #666;
+    flex-wrap: wrap;
+}
+
+.room-meta strong { color: #4b3f99; }
+
+/* ===== Quiz cards (host) ===== */
+.quiz-card {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 16px;
+    margin: 12px 0;
+    background: #fafafa;
+}
+
+.quiz-card h3 {
+    margin: 0 0 6px 0;
+    color: #4b3f99;
+}
+
+.quiz-card p {
+    margin: 4px 0;
+    color: #444;
+}
+
+.quiz-owner {
+    color: #888 !important;
+    font-size: 13px;
+}
+
+.quiz-select-btn {
+    margin-top: 10px;
+}
+
+/* ===== Stato / status messages ===== */
+.status-msg {
+    padding: 12px;
+    background: #f0edff;
+    border-left: 4px solid #4b3f99;
+    border-radius: 4px;
+    margin: 12px 0;
+    font-size: 14px;
+}
+
+.correct-answer {
+    color: #4b3f99;
+    font-weight: 600;
+    font-size: 16px;
+    margin: 10px 0;
+}
+
+.highlight {
+    background: #fff7cc;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+/* ===== Timer ===== */
+#timerDisplay {
+    font-size: 20px;
+    font-weight: bold;
+    color: #4b3f99;
+    margin: 10px 0;
+    font-family: monospace;
 }

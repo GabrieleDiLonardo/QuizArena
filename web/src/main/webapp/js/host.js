@@ -1,60 +1,44 @@
+// ===== Log helper =====
 const log = (msg) => {
     const el = document.getElementById('log');
+    if (!el) return;
     el.innerHTML += `<div>${new Date().toLocaleTimeString()} — ${msg}</div>`;
     el.scrollTop = el.scrollHeight;
 };
 
+// ===== WebSocket =====
 const ws = new QuizWsClient(handleMessage);
 ws.connect();
 
+// ===== Stato locale =====
 let currentPin = null;
 let players = [];
 
-function loadQuizzes() {
-    document.getElementById('quizList').innerHTML =
-        '<p>Vai su <a href="quizzes">Quiz disponibili</a> per vedere gli ID dei quiz.</p>' +
-        '<p>Poi incolla l\'ID nel formato <code>[timestampMicros,uniqueInteger]</code>:</p>' +
-        '<input id="quizIdInput" placeholder="es. [1790872455166200,1160]">' +
-        '<button onclick="createRoom()">Crea stanza</button>';
-}
-
-function createRoom() {
-    const raw = document.getElementById('quizIdInput').value.trim();
-    const parts = raw.replace(/[\[\]]/g, '').split(',').map(s => s.trim());
-    if (parts.length !== 2) {
-        alert('Formato ID non valido. Usa [timestamp,unique]');
-        return;
-    }
-    const quizId = {
-        timestampMicros: parseInt(parts[0]),
-        uniqueInteger: parseInt(parts[1])
-    };
-    ws.send({
-        action: 'create_room',
-        quizId: quizId,
-        hostName: 'host'
-    });
-}
-
+// ===== Handlers pulsanti =====
 document.getElementById('startBtn').onclick = () => {
-    ws.send({action: 'start_game', pin: currentPin});
+    ws.send({action: 'start_game'});
 };
 
 document.getElementById('nextBtn').onclick = () => {
-    ws.send({action: 'next_round', pin: currentPin});
+    ws.send({action: 'next_round'});
 };
 
 document.getElementById('endBtn').onclick = () => {
     if (confirm('Terminare la partita?')) {
-        ws.send({action: 'end_game', pin: currentPin});
+        ws.send({action: 'end_game'});
     }
 };
 
+// ===== Gestione messaggi dal server =====
 function handleMessage(msg) {
     log('← ' + JSON.stringify(msg));
 
     if (msg.type === 'connected') {
         loadQuizzes();
+        return;
+    }
+    if (msg.type === 'quizzes') {
+        renderQuizzes(msg.quizzes);
         return;
     }
     if (msg.type === 'room_created') {
@@ -76,6 +60,47 @@ function handleMessage(msg) {
     }
 }
 
+// ===== Caricamento e render della lista quiz =====
+function loadQuizzes() {
+    document.getElementById('quizList').innerHTML = 'Caricamento...';
+    ws.send({action: 'list_quizzes'});
+}
+
+function renderQuizzes(quizzes) {
+    const el = document.getElementById('quizList');
+    if (!quizzes || quizzes.length === 0) {
+        el.innerHTML = '<p>Nessun quiz disponibile. Contatta un amministratore.</p>';
+        return;
+    }
+    el.innerHTML = quizzes.map((q, i) => `
+        <div class="quiz-card">
+            <h3>${escapeHtml(q.title)}</h3>
+            <p>${escapeHtml(q.description || '')}</p>
+            <p class="quiz-owner">di ${escapeHtml(q.owner || 'anonimo')}</p>
+            <button class="quiz-select-btn" data-index="${i}">Crea stanza</button>
+        </div>
+    `).join('');
+
+    document.querySelectorAll('.quiz-select-btn').forEach(btn => {
+        btn.onclick = () => {
+            const idx = parseInt(btn.getAttribute('data-index'), 10);
+            createRoomWithQuiz(quizzes[idx]);
+        };
+    });
+}
+
+function createRoomWithQuiz(quiz) {
+    ws.send({
+        action: 'create_room',
+        quizId: {
+            timestampMicros: quiz.id.timestampMicros,
+            uniqueInteger: quiz.id.uniqueInteger
+        },
+        hostName: 'host'
+    });
+}
+
+// ===== Gestione eventi di gioco =====
 function handleEvent(ev) {
     if (ev.type === 'player_joined') {
         if (!players.includes(ev.nickname)) {
@@ -89,7 +114,8 @@ function handleEvent(ev) {
         document.getElementById('step2').style.display = 'none';
         document.getElementById('step3').style.display = 'block';
         document.getElementById('startBtn').disabled = true;
-        document.getElementById('roundInfo').textContent = 'Partita avviata. Premi "Prossimo round" per iniziare.';
+        document.getElementById('roundInfo').textContent =
+            'Partita avviata. Premi "Prossimo round" per iniziare.';
         document.getElementById('questionText').textContent = '';
         document.getElementById('correctAnswer').textContent = '';
         document.getElementById('nextBtn').style.display = 'inline-block';
@@ -101,14 +127,14 @@ function handleEvent(ev) {
     } else if (ev.type === 'game_finished') {
         showFinal(ev);
     } else if (ev.type === 'game_cancelled') {
-        alert('Partita cancellata');
+        alert('Partita cancellata: ' + (ev.reason || 'motivo sconosciuto'));
         location.reload();
     }
 }
 
 function updatePlayerList() {
     document.getElementById('playerList').innerHTML =
-        players.map(p => `<li>${p}</li>`).join('');
+        players.map(p => `<li>${escapeHtml(p)}</li>`).join('');
     document.getElementById('startBtn').disabled = players.length === 0;
 }
 
@@ -140,10 +166,20 @@ function showFinal(ev) {
 }
 
 function renderLeaderboard(lb) {
+    const el = document.getElementById('leaderboard');
     if (!lb || lb.length === 0) {
-        document.getElementById('leaderboard').innerHTML = '<li>(nessun punteggio)</li>';
+        el.innerHTML = '<li>(nessun punteggio)</li>';
         return;
     }
-    document.getElementById('leaderboard').innerHTML =
-        lb.map(([name, score]) => `<li><strong>${name}</strong> — ${score} punti</li>`).join('');
+    el.innerHTML = lb.map(([name, score], i) =>
+        `<li><strong>#${i + 1} ${escapeHtml(name)}</strong> — ${score} punti</li>`
+    ).join('');
+}
+
+// ===== Utility =====
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
 }

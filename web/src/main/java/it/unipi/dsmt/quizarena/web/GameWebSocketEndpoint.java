@@ -124,6 +124,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 case "next_round" -> handleNextRound();
                 case "answer" -> handleAnswer(message);
                 case "end_game" -> handleEndGame();
+                case "list_quizzes" -> handleListQuizzes();
                 default -> sendError("unsupported_action",
                         "Unsupported action: " + action);
             }
@@ -178,6 +179,24 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private void handleListRooms() throws IOException, ErlangServiceException {
         var rooms = currentErlangSession().listRooms(ERLANG_TIMEOUT_MILLIS);
         sendJson(Map.of("type", "rooms", "rooms", rooms));
+    }
+        private void handleListQuizzes()
+            throws IOException, ErlangServiceException {
+        java.util.List<it.unipi.dsmt.quizarena.model.QuizSummary> quizzes =
+                client.listQuizzes(backendNode, gatewayName, ERLANG_TIMEOUT_MILLIS);
+        java.util.List<java.util.Map<String, Object>> out = new java.util.ArrayList<>();
+        for (it.unipi.dsmt.quizarena.model.QuizSummary q : quizzes) {
+            java.util.Map<String, Object> idMap = new java.util.HashMap<>();
+            idMap.put("timestampMicros", q.id().timestampMicros());
+            idMap.put("uniqueInteger", q.id().uniqueInteger());
+            java.util.Map<String, Object> item = new java.util.HashMap<>();
+            item.put("id", idMap);
+            item.put("owner", q.owner());
+            item.put("title", q.title());
+            item.put("description", q.description());
+            out.add(item);
+        }
+        sendJson(java.util.Map.of("type", "quizzes", "quizzes", out));
     }
 
     private void handleJoin(JsonNode message)
