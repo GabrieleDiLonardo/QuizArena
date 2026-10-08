@@ -7,21 +7,26 @@ const gameStatus = document.getElementById("game-status");
 const gameError = document.getElementById("game-error");
 const gameResult = document.getElementById("game-result");
 const roomPin = document.getElementById("room-pin");
+const startGameButton = document.getElementById("start-game");
 
 let connected = false;
 let requestPending = false;
 let roomCreated = false;
+let gameStarted = false;
 
 function updateButtons() {
     createRoomButtons.forEach((button) => {
         button.disabled = !connected || requestPending || roomCreated;
     });
+    startGameButton.disabled = !connected
+        || requestPending
+        || !roomCreated
+        || gameStarted;
 }
 
 function showError(message) {
     gameError.textContent = message;
     gameError.hidden = false;
-    gameResult.hidden = true;
 }
 
 const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -51,8 +56,26 @@ socket.addEventListener("message", (event) => {
         hostNameInput.disabled = true;
         roomPin.textContent = message.pin;
         gameResult.hidden = false;
+        startGameButton.hidden = false;
         gameError.hidden = true;
         gameStatus.textContent = "Partita creata.";
+        updateButtons();
+        return;
+    }
+
+    if (message.type === "event"
+            && message.event?.type === "game_started") {
+        requestPending = false;
+        gameStarted = true;
+        startGameButton.hidden = true;
+        gameError.hidden = true;
+        gameStatus.textContent = "Partita avviata.";
+        updateButtons();
+        return;
+    }
+
+    if (message.type === "game_start_accepted") {
+        requestPending = false;
         updateButtons();
         return;
     }
@@ -115,4 +138,24 @@ createRoomButtons.forEach((button) => {
             updateButtons();
         }
     });
+});
+
+startGameButton.addEventListener("click", () => {
+    if (!connected || socket.readyState !== WebSocket.OPEN) {
+        showError("Il collegamento al server non è disponibile.");
+        return;
+    }
+
+    requestPending = true;
+    gameError.hidden = true;
+    gameStatus.textContent = "Avvio della partita...";
+    updateButtons();
+
+    try {
+        socket.send(JSON.stringify({action: "start_game"}));
+    } catch (exception) {
+        requestPending = false;
+        showError("Impossibile inviare la richiesta al server.");
+        updateButtons();
+    }
 });

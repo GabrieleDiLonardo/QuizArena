@@ -65,6 +65,17 @@ handle_info({JavaPid, Ref, {cancel_room, _Pin}}, State)
     JavaPid ! {Ref, {error, invalid_request}},
     {noreply, State};
 
+handle_info({JavaPid, Ref, {start_game, Pin}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
+    Result = start_game(Pin, JavaPid),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {start_game, _Pin}}, State)
+  when is_pid(JavaPid), is_reference(Ref) ->
+    JavaPid ! {Ref, {error, invalid_request}},
+    {noreply, State};
+
 %% Restituisce un errore quando Java richiede un'operazione non supportata
 handle_info({JavaPid, Ref, _Request}, State)
   when is_pid(JavaPid), is_reference(Ref) ->
@@ -153,6 +164,15 @@ room_start_error_after_rollback(Pin, StartReason) ->
 cancel_room(Pin, HostPid) ->
     try room_gen_server:cancel(Pin, HostPid) of
         ok -> {ok, cancelled};
+        {error, Reason} -> {error, Reason}
+    catch
+        exit:{noproc, _} -> {error, room_not_found};
+        exit:Reason -> {error, {room_call_failed, Reason}}
+    end.
+
+start_game(Pin, HostPid) ->
+    try room_gen_server:start_game(Pin, HostPid) of
+        ok -> {ok, started};
         {error, Reason} -> {error, Reason}
     catch
         exit:{noproc, _} -> {error, room_not_found};

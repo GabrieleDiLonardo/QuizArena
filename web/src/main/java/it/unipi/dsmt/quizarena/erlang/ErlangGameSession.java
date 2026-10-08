@@ -121,6 +121,23 @@ public class ErlangGameSession implements AutoCloseable {
         mailbox.send(gatewayName, remoteNode, requestMessage);
     }
 
+    public void startGame(
+            String pin,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("start_game"),
+                    new OtpErlangString(pin)
+                }
+        );
+
+        OtpErlangObject result = sendRequest(request, timeoutMillis);
+        decodeAtomResult(result, "started");
+    }
+
     private OtpErlangObject sendRequest(
             OtpErlangObject requestBody,
             long timeoutMillis
@@ -275,6 +292,27 @@ public class ErlangGameSession implements AutoCloseable {
         throw new IOException(
                 "Expected an Erlang string for " + expectedValue
         );
+    }
+
+    private static void decodeAtomResult(
+            OtpErlangObject result,
+            String expectedAtom
+    ) throws IOException, ErlangServiceException {
+        if (!(result instanceof OtpErlangTuple tuple)
+                || tuple.arity() != 2) {
+            throw new IOException("Malformed result from Erlang gateway");
+        }
+
+        OtpErlangObject status = tuple.elementAt(0);
+        OtpErlangObject content = tuple.elementAt(1);
+
+        if (new OtpErlangAtom("error").equals(status)) {
+            throw new ErlangServiceException(content.toString());
+        }
+        if (!new OtpErlangAtom("ok").equals(status)
+                || !new OtpErlangAtom(expectedAtom).equals(content)) {
+            throw new IOException("Unexpected result from Erlang gateway");
+        }
     }
 
     private static String requireText(String value, String name) {

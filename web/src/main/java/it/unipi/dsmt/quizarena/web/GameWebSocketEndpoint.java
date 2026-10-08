@@ -114,6 +114,10 @@ public final class GameWebSocketEndpoint extends Endpoint {
             }
 
             String action = requiredText(message, "action");
+            if ("start_game".equals(action)) {
+                startGame();
+                return;
+            }
             if (!"create_room".equals(action)) {
                 sendError("unsupported_action", "Unsupported action");
                 return;
@@ -155,6 +159,23 @@ public final class GameWebSocketEndpoint extends Endpoint {
         } catch (IOException exception) {
             sendError("backend_unavailable", "Backend unavailable");
         }
+    }
+
+    private void startGame()
+            throws IOException, ErlangServiceException {
+        if (roomPin == null) {
+            sendError(
+                    "room_not_created",
+                    "Create a room before starting the game"
+            );
+            return;
+        }
+
+        currentErlangSession().startGame(
+                roomPin,
+                ERLANG_TIMEOUT_MILLIS
+        );
+        sendJson(Map.of("type", "game_start_accepted"));
     }
 
     private void sendEvent(OtpErlangObject event) {
