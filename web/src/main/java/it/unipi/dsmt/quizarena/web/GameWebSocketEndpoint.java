@@ -42,8 +42,8 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private Session webSocketSession;
     private ErlangGameSession erlangSession;
     private volatile String roomPin;
-    private volatile Long playerId;     
-    private volatile String role;  
+    private volatile Long playerId;
+    private volatile String role;
 
     private GameWebSocketEndpoint(
             ErlangClient client,
@@ -107,26 +107,26 @@ public final class GameWebSocketEndpoint extends Endpoint {
     }
 
     private void handleMessage(String text) {
-    try {
-        JsonNode message = JSON.readTree(text);
-        if (!message.isObject()) {
-            throw new IllegalArgumentException("Message must be a JSON object");
-        }
+        try {
+            JsonNode message = JSON.readTree(text);
+            if (!message.isObject()) {
+                throw new IllegalArgumentException("Message must be a JSON object");
+            }
 
-        String action = requiredText(message, "action");
-        switch (action) {
-            case "create_room" -> handleCreateRoom(message);
-            case "cancel_room" -> handleCancelRoom(message);
-            case "list_quizzes" -> handleListQuizzes();
-            case "list_rooms" -> handleListRooms();
-            case "join" -> handleJoin(message);
-            case "rejoin" -> handleRejoin(message);
-            case "start_game" -> handleStartGame(message);
-            case "next_round" -> handleNextRound(message);
-            case "answer" -> handleAnswer(message);
-            case "end_game" -> handleEndGame(message);
-            default -> sendError("unsupported_action", "Unsupported action: " + action);
-        }
+            String action = requiredText(message, "action");
+            switch (action) {
+                case "create_room" -> handleCreateRoom(message);
+                case "cancel_room" -> handleCancelRoom();
+                case "list_rooms" -> handleListRooms();
+                case "join" -> handleJoin(message);
+                case "rejoin" -> handleRejoin(message);
+                case "start_game" -> handleStartGame();
+                case "next_round" -> handleNextRound();
+                case "answer" -> handleAnswer(message);
+                case "end_game" -> handleEndGame();
+                default -> sendError("unsupported_action",
+                        "Unsupported action: " + action);
+            }
         } catch (JsonProcessingException | IllegalArgumentException exception) {
             sendError("invalid_message", exception.getMessage());
         } catch (ErlangServiceException exception) {
@@ -136,92 +136,126 @@ public final class GameWebSocketEndpoint extends Endpoint {
         }
     }
 
-private void handleCreateRoom(JsonNode message) throws IOException, ErlangServiceException {
-    if (roomPin != null) {
-        sendError("room_already_created", "This connection already owns a room");
-        return;
+    // ---------- Handlers ----------
+
+    private void handleCreateRoom(JsonNode message)
+            throws IOException, ErlangServiceException {
+        if (roomPin != null) {
+            sendError("room_already_created",
+                    "This connection already owns a room");
+            return;
+        }
+        JsonNode quizIdNode = message.path("quizId");
+        if (!quizIdNode.isObject()) {
+            throw new IllegalArgumentException("Missing quizId");
+        }
+        QuizId quizId = new QuizId(
+                requiredLong(quizIdNode, "timestampMicros"),
+                requiredLong(quizIdNode, "uniqueInteger"));
+        String hostName = requiredText(message, "hostName").trim();
+        if (hostName.length() > MAX_HOST_NAME_LENGTH) {
+            throw new IllegalArgumentException("Host name is too long");
+        }
+
+        String pin = currentErlangSession().createRoom(
+                quizId, hostName, ERLANG_TIMEOUT_MILLIS);
+        roomPin = pin;
+        role = "host";
+        sendJson(Map.of("type", "room_created", "pin", pin));
     }
-    JsonNode quizIdNode = message.path("quizId");
-    if (!quizIdNode.isObject()) throw new IllegalArgumentException("Missing quizId");
-    QuizId quizId = new QuizId(
-            requiredLong(quizIdNode, "timestampMicros"),
-            requiredLong(quizIdNode, "uniqueInteger"));
-    String hostName = requiredText(message, "hostName").trim();
-    if (hostName.length() > 50) throw new IllegalArgumentException("Host name is too long");
 
-    String pin = currentErlangSession().createRoom(quizId, hostName, ERLANG_TIMEOUT_MILLIS);
-    roomPin = pin;
-    role = "host";
-    sendJson(Map.of("type", "room_created", "pin", pin));
-}
+    private void handleCancelRoom() throws IOException {
+        if (roomPin == null) {
+            sendError("room_not_created", "No room to cancel");
+            return;
+        }
+        currentErlangSession().cancelRoom(roomPin);
+        String cancelledPin = roomPin;
+        roomPin = null;
+        sendJson(Map.of("type", "cancelled", "pin", cancelledPin));
+    }
 
-private void handleCancelRoom(JsonNode message) throws IOException {
-    String pin = requiredText(message, "pin");
-    currentErlangSession().cancelRoom(pin);
-    if (pin.equals(roomPin)) roomPin = null;
-    sendJson(Map.of("type", "cancelled", "pin", pin));
-}
+    private void handleListRooms() throws IOException, ErlangServiceException {
+        var rooms = currentErlangSession().listRooms(ERLANG_TIMEOUT_MILLIS);
+        sendJson(Map.of("type", "rooms", "rooms", rooms));
+    }
 
-private void handleListQuizzes() throws IOException, ErlangServiceException {
-    // Passa attraverso il client (non la session)
-    // Nota: ErlangClient.listQuizzes è il metodo esistente
-    // Qui usiamo la session per coerenza
-    sendJson(Map.of("type", "error", "code", "not_implemented",
-                    "message", "Use /quizzes for now"));
-}
+    private void handleJoin(JsonNode message)
+            throws IOException, ErlangServiceException {
+        String pin = requiredText(message, "pin");
+        String nickname = requiredText(message, "nickname").trim();
+        if (nickname.length() > MAX_HOST_NAME_LENGTH) {
+            throw new IllegalArgumentException("Nickname too long");
+        }
+        long pid = currentErlangSession().join(
+                pin, nickname, ERLANG_TIMEOUT_MILLIS);
+        this.playerId = pid;
+        this.roomPin = pin;
+        this.role = "player";
+        sendJson(Map.of("type", "joined",
+                "playerId", pid, "pin", pin));
+    }
 
-private void handleListRooms() throws IOException, ErlangServiceException {
-    var rooms = currentErlangSession().listRooms(ERLANG_TIMEOUT_MILLIS);
-    sendJson(Map.of("type", "rooms", "rooms", rooms));
-}
+    private void handleRejoin(JsonNode message)
+            throws IOException, ErlangServiceException {
+        String pin = requiredText(message, "pin");
+        long pid = requiredLong(message, "playerId");
+        currentErlangSession().rejoin(pin, pid, ERLANG_TIMEOUT_MILLIS);
+        this.playerId = pid;
+        this.roomPin = pin;
+        this.role = "player";
+        sendJson(Map.of("type", "rejoined",
+                "playerId", pid, "pin", pin));
+    }
 
-private void handleJoin(JsonNode message) throws IOException, ErlangServiceException {
-    String pin = requiredText(message, "pin");
-    String nickname = requiredText(message, "nickname").trim();
-    if (nickname.length() > 50) throw new IllegalArgumentException("Nickname too long");
-    long pid = currentErlangSession().join(pin, nickname, ERLANG_TIMEOUT_MILLIS);
-    this.playerId = pid;
-    this.roomPin = pin;
-    this.role = "player";
-    sendJson(Map.of("type", "joined", "playerId", pid, "pin", pin));
-}
+    private void handleStartGame()
+            throws IOException, ErlangServiceException {
+        if (roomPin == null) {
+            sendError("room_not_created",
+                    "Create a room before starting the game");
+            return;
+        }
+        currentErlangSession().startGame(roomPin, ERLANG_TIMEOUT_MILLIS);
+        sendJson(Map.of("type", "ok", "action", "start_game"));
+    }
 
-private void handleRejoin(JsonNode message) throws IOException, ErlangServiceException {
-    String pin = requiredText(message, "pin");
-    long pid = requiredLong(message, "playerId");
-    currentErlangSession().rejoin(pin, pid, ERLANG_TIMEOUT_MILLIS);
-    this.playerId = pid;
-    this.roomPin = pin;
-    this.role = "player";
-    sendJson(Map.of("type", "rejoined", "playerId", pid, "pin", pin));
-}
+    private void handleNextRound()
+            throws IOException, ErlangServiceException {
+        if (roomPin == null) {
+            sendError("room_not_created",
+                    "Create a room before starting a round");
+            return;
+        }
+        currentErlangSession().nextRound(roomPin, ERLANG_TIMEOUT_MILLIS);
+        sendJson(Map.of("type", "ok", "action", "next_round"));
+    }
 
-private void handleStartGame(JsonNode message) throws IOException, ErlangServiceException {
-    String pin = requiredText(message, "pin");
-    currentErlangSession().startGame(pin, ERLANG_TIMEOUT_MILLIS);
-    sendJson(Map.of("type", "ok", "action", "start_game"));
-}
+    private void handleAnswer(JsonNode message)
+            throws IOException, ErlangServiceException {
+        if (roomPin == null) {
+            sendError("room_not_created",
+                    "Join a room before answering");
+            return;
+        }
+        long pid = requiredLong(message, "playerId");
+        long round = requiredLong(message, "round");
+        String answer = requiredText(message, "answer");
+        currentErlangSession().answer(
+                roomPin, pid, round, answer, ERLANG_TIMEOUT_MILLIS);
+        sendJson(Map.of("type", "ok", "action", "answer"));
+    }
 
-private void handleNextRound(JsonNode message) throws IOException, ErlangServiceException {
-    String pin = requiredText(message, "pin");
-    currentErlangSession().nextRound(pin, ERLANG_TIMEOUT_MILLIS);
-    sendJson(Map.of("type", "ok", "action", "next_round"));
-}
+    private void handleEndGame()
+            throws IOException, ErlangServiceException {
+        if (roomPin == null) {
+            sendError("room_not_created", "No room to end");
+            return;
+        }
+        currentErlangSession().endGame(roomPin, ERLANG_TIMEOUT_MILLIS);
+        sendJson(Map.of("type", "ok", "action", "end_game"));
+    }
 
-private void handleAnswer(JsonNode message) throws IOException, ErlangServiceException {
-    String pin = requiredText(message, "pin");
-    long pid = requiredLong(message, "playerId");
-    long round = requiredLong(message, "round");
-    String answer = requiredText(message, "answer");
-    currentErlangSession().answer(pin, pid, round, answer, ERLANG_TIMEOUT_MILLIS);
-    sendJson(Map.of("type", "ok", "action", "answer"));
-}
-
-private void handleEndGame(JsonNode message) throws IOException, ErlangServiceException {
-    String pin = requiredText(message, "pin");
-    currentErlangSession().endGame(pin, ERLANG_TIMEOUT_MILLIS);
-    sendJson(Map.of("type", "ok", "action", "end_game"));
-}
+    // ---------- Internals ----------
 
     private void sendEvent(OtpErlangObject event) {
         try {

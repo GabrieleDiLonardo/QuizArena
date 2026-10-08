@@ -72,6 +72,8 @@ public class ErlangGameSession implements AutoCloseable {
         receiverThread.start();
     }
 
+    // ---------- API pubblica ----------
+
     public String createRoom(
             QuizId quizId,
             String hostName,
@@ -122,124 +124,96 @@ public class ErlangGameSession implements AutoCloseable {
     }
 
     public long join(String pin, String nickname, long timeoutMillis)
-        throws IOException, ErlangServiceException {
-    requireText(pin, "pin");
-    requireText(nickname, "nickname");
-    OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
-        new OtpErlangAtom("join"),
-        new OtpErlangString(pin),
-        new OtpErlangString(nickname)
-    });
-    OtpErlangObject result = sendRequest(request, timeoutMillis);
-    return decodeLongResult(result, "playerId");
-}
+            throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        requireText(nickname, "nickname");
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangAtom("join"),
+            new OtpErlangString(pin),
+            new OtpErlangString(nickname)
+        });
+        OtpErlangObject result = sendRequest(request, timeoutMillis);
+        return decodeLongResult(result, "playerId");
+    }
 
-public long rejoin(String pin, long playerId, long timeoutMillis)
-        throws IOException, ErlangServiceException {
-    requireText(pin, "pin");
-    OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
-        new OtpErlangAtom("rejoin"),
-        new OtpErlangString(pin),
-        new OtpErlangLong(playerId)
-    });
-    OtpErlangObject result = sendRequest(request, timeoutMillis);
-    return decodeLongResult(result, "playerId");
-}
+    public long rejoin(String pin, long playerId, long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangAtom("rejoin"),
+            new OtpErlangString(pin),
+            new OtpErlangLong(playerId)
+        });
+        OtpErlangObject result = sendRequest(request, timeoutMillis);
+        return decodeLongResult(result, "playerId");
+    }
 
-public void startGame(String pin, long timeoutMillis)
-        throws IOException, ErlangServiceException {
-    requireText(pin, "pin");
-    OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
-        new OtpErlangAtom("start_game"),
-        new OtpErlangString(pin)
-    });
-    decodeOkResult(sendRequest(request, timeoutMillis));
-}
+    public void startGame(String pin, long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangAtom("start_game"),
+            new OtpErlangString(pin)
+        });
+        decodeOkResult(sendRequest(request, timeoutMillis));
+    }
 
-public void nextRound(String pin, long timeoutMillis)
-        throws IOException, ErlangServiceException {
-    requireText(pin, "pin");
-    OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
-        new OtpErlangAtom("next_round"),
-        new OtpErlangString(pin)
-    });
-    decodeOkResult(sendRequest(request, timeoutMillis));
-}
+    public void nextRound(String pin, long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangAtom("next_round"),
+            new OtpErlangString(pin)
+        });
+        decodeOkResult(sendRequest(request, timeoutMillis));
+    }
 
-public void answer(String pin, long playerId, long round, String answer,
-                   long timeoutMillis)
-        throws IOException, ErlangServiceException {
-    requireText(pin, "pin");
-    requireText(answer, "answer");
-    OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
-        new OtpErlangAtom("answer"),
-        new OtpErlangString(pin),
-        new OtpErlangLong(playerId),
-        new OtpErlangLong(round),
-        new OtpErlangString(answer)
-    });
-    decodeOkResult(sendRequest(request, timeoutMillis));
-}
+    public void answer(String pin, long playerId, long round, String answer,
+                       long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        requireText(answer, "answer");
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangAtom("answer"),
+            new OtpErlangString(pin),
+            new OtpErlangLong(playerId),
+            new OtpErlangLong(round),
+            new OtpErlangString(answer)
+        });
+        decodeOkResult(sendRequest(request, timeoutMillis));
+    }
 
-public void endGame(String pin, long timeoutMillis)
-        throws IOException, ErlangServiceException {
-    requireText(pin, "pin");
-    OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
-        new OtpErlangAtom("end_game"),
-        new OtpErlangString(pin)
-    });
-    decodeOkResult(sendRequest(request, timeoutMillis));
-}
+    public void endGame(String pin, long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangAtom("end_game"),
+            new OtpErlangString(pin)
+        });
+        decodeOkResult(sendRequest(request, timeoutMillis));
+    }
 
-public java.util.List<Object> listRooms(long timeoutMillis)
-        throws IOException, ErlangServiceException {
-    OtpErlangObject result = sendRequest(
-            new OtpErlangAtom("list_rooms"), timeoutMillis);
-    if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
-        throw new IOException("Malformed result from list_rooms");
+    public java.util.List<Object> listRooms(long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        OtpErlangObject result = sendRequest(
+                new OtpErlangAtom("list_rooms"), timeoutMillis);
+        if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
+            throw new IOException("Malformed result from list_rooms");
+        }
+        if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
+            throw new ErlangServiceException(t.elementAt(1).toString());
+        }
+        if (!(t.elementAt(1) instanceof OtpErlangList list)) {
+            throw new IOException("Expected a list of rooms");
+        }
+        java.util.List<Object> out = new java.util.ArrayList<>();
+        for (OtpErlangObject item : list) {
+            out.add(ErlangTermConverter.toJavaValue(item));
+        }
+        return out;
     }
-    if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
-        throw new ErlangServiceException(t.elementAt(1).toString());
-    }
-    if (!(t.elementAt(1) instanceof OtpErlangList list)) {
-        throw new IOException("Expected a list of rooms");
-    }
-    java.util.List<Object> out = new java.util.ArrayList<>();
-    for (OtpErlangObject item : list) {
-        out.add(ErlangTermConverter.toJavaValue(item));
-    }
-    return out;
-}
 
-// ---------- Decodifica risposte ----------
-
-private static long decodeLongResult(OtpErlangObject result, String ctx)
-        throws IOException, ErlangServiceException {
-    if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
-        throw new IOException("Malformed result from " + ctx);
-    }
-    if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
-        throw new ErlangServiceException(t.elementAt(1).toString());
-    }
-    if (!new OtpErlangAtom("ok").equals(t.elementAt(0))) {
-        throw new IOException("Unknown status from " + ctx);
-    }
-    if (!(t.elementAt(1) instanceof OtpErlangLong v)) {
-        throw new IOException("Expected long from " + ctx);
-    }
-    return v.longValue();
-}
-
-private static void decodeOkResult(OtpErlangObject result)
-        throws IOException, ErlangServiceException {
-    if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
-        throw new IOException("Malformed result");
-    }
-    if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
-        throw new ErlangServiceException(t.elementAt(1).toString());
-    }
-    // {ok, ok} oppure {ok, Value}
-}
+    // ---------- Internals ----------
 
     private OtpErlangObject sendRequest(
             OtpErlangObject requestBody,
@@ -360,6 +334,8 @@ private static void decodeOkResult(OtpErlangObject result)
         listener.onFailure(exception);
     }
 
+    // ---------- Decodifica risposte ----------
+
     private static String decodeStringResult(
             OtpErlangObject result,
             String expectedValue
@@ -395,6 +371,55 @@ private static void decodeOkResult(OtpErlangObject result)
         throw new IOException(
                 "Expected an Erlang string for " + expectedValue
         );
+    }
+
+    private static long decodeLongResult(OtpErlangObject result, String ctx)
+            throws IOException, ErlangServiceException {
+        if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
+            throw new IOException("Malformed result from " + ctx);
+        }
+        if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
+            throw new ErlangServiceException(t.elementAt(1).toString());
+        }
+        if (!new OtpErlangAtom("ok").equals(t.elementAt(0))) {
+            throw new IOException("Unknown status from " + ctx);
+        }
+        if (!(t.elementAt(1) instanceof OtpErlangLong v)) {
+            throw new IOException("Expected long from " + ctx);
+        }
+        return v.longValue();
+    }
+
+    private static void decodeOkResult(OtpErlangObject result)
+            throws IOException, ErlangServiceException {
+        if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
+            throw new IOException("Malformed result");
+        }
+        if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
+            throw new ErlangServiceException(t.elementAt(1).toString());
+        }
+        // {ok, ok} oppure {ok, Value}
+    }
+
+    private static void decodeAtomResult(
+            OtpErlangObject result,
+            String expectedAtom
+    ) throws IOException, ErlangServiceException {
+        if (!(result instanceof OtpErlangTuple tuple)
+                || tuple.arity() != 2) {
+            throw new IOException("Malformed result from Erlang gateway");
+        }
+
+        OtpErlangObject status = tuple.elementAt(0);
+        OtpErlangObject content = tuple.elementAt(1);
+
+        if (new OtpErlangAtom("error").equals(status)) {
+            throw new ErlangServiceException(content.toString());
+        }
+        if (!new OtpErlangAtom("ok").equals(status)
+                || !new OtpErlangAtom(expectedAtom).equals(content)) {
+            throw new IOException("Unexpected result from Erlang gateway");
+        }
     }
 
     private static String requireText(String value, String name) {

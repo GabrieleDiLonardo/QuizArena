@@ -67,6 +67,9 @@
             <p id="game-result" hidden>
                 Partita creata. PIN: <strong id="room-pin"></strong>
             </p>
+            <button id="start-game" type="button" hidden>
+                Avvia partita
+            </button>
         </section>
     <% } %>
 
