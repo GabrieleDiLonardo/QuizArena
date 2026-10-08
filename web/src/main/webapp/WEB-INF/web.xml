@@ -8,7 +8,7 @@
 
     <context-param>
         <param-name>erlangNodeName</param-name>
-        <param-value>quizarena_web@MSI</param-value>
+        <param-value>quizarena_web@localhost</param-value>
     </context-param>
 
     <context-param>
@@ -18,7 +18,7 @@
 
     <context-param>
         <param-name>erlangBackendNode</param-name>
-        <param-value>quizarena_backend@MSI</param-value>
+        <param-value>quizarena_backend@localhost</param-value>
     </context-param>
 
     <context-param>

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Host - QuizArena</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Host</h1>
+        <div id="step1">
+            <h2>1. Scegli un quiz</h2>
+            <div id="quizList">Caricamento...</div>
+        </div>
+        <div id="step2" style="display:none">
+            <h2>2. Stanza creata</h2>
+            <p>PIN da comunicare ai giocatori:</p>
+            <div class="pin" id="pinDisplay"></div>
+            <h3>Giocatori in attesa</h3>
+            <ul id="playerList"></ul>
+            <button id="startBtn" disabled>Avvia partita</button>
+        </div>
+        <div id="step3" style="display:none">
+            <h2>3. Partita in corso</h2>
+            <div id="roundInfo"></div>
+            <div id="questionText" style="font-size: 18px; margin: 10px 0;"></div>
+            <p id="correctAnswer" style="color: #4b3f99;"></p>
+            <h3>Classifica</h3>
+            <ol id="leaderboard"></ol>
+            <button id="nextBtn" style="display:none">Prossimo round</button>
+            <button id="endBtn">Termina partita</button>
+        </div>
+        <div id="log" class="log"></div>
+    </div>
+    <script src="js/ws-client.js"></script>
+    <script src="js/host.js"></script>
+</body>
+</html>

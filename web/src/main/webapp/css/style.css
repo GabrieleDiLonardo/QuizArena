@@ -1,0 +1,39 @@
+body {
+    font-family: -apple-system, Segoe UI, sans-serif;
+    margin: 0; padding: 20px;
+    background: #f5f7fb; color: #222;
+}
+.container { max-width: 700px; margin: 0 auto; background: white;
+    padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.08); }
+h1 { color: #4b3f99; margin-top: 0; }
+h2 { color: #4b3f99; font-size: 20px; }
+.btn, button {
+    display: inline-block; padding: 12px 20px; margin: 8px 8px 8px 0;
+    background: #4b3f99; color: white; border: none; border-radius: 8px;
+    text-decoration: none; cursor: pointer; font-size: 15px;
+}
+.btn:hover, button:hover { background: #6353c9; }
+button:disabled { background: #ccc; cursor: not-allowed; }
+input {
+    padding: 10px; margin: 5px 0; border: 1px solid #ccc;
+    border-radius: 6px; font-size: 15px; width: 100%; box-sizing: border-box;
+}
+.pin {
+    font-size: 48px; font-weight: bold; color: #4b3f99;
+    text-align: center; letter-spacing: 8px; padding: 20px;
+    background: #f0edff; border-radius: 12px; margin: 15px 0;
+}
+ul, ol { padding-left: 20px; }
+li { padding: 6px 0; }
+.answer-btn {
+    display: block; width: 100%; text-align: left;
+    margin: 8px 0; padding: 14px 18px; background: white;
+    color: #222; border: 2px solid #ddd; font-size: 16px;
+}
+.answer-btn:hover { border-color: #4b3f99; background: #f8f6ff; }
+.answer-btn.selected { border-color: #4b3f99; background: #e8e3ff; }
+.log {
+    margin-top: 20px; padding: 12px; background: #f0f0f0;
+    border-radius: 6px; font-family: monospace; font-size: 12px;
+    max-height: 200px; overflow-y: auto; color: #555;
+}

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Gioca - QuizArena</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Gioca</h1>
+        <div id="step1">
+            <h2>Entra in una partita</h2>
+            <input type="text" id="pinInput" placeholder="PIN" maxlength="6">
+            <input type="text" id="nickInput" placeholder="Nickname" maxlength="20">
+            <button id="joinBtn">Entra</button>
+        </div>
+        <div id="step2" style="display:none">
+            <h2>In attesa dell'host...</h2>
+            <p id="statusMsg"></p>
+        </div>
+        <div id="step3" style="display:none">
+            <h2 id="roundTitle">Round</h2>
+            <div id="questionText"></div>
+            <div id="answersBox"></div>
+            <p id="timerDisplay"></p>
+        </div>
+        <div id="step4" style="display:none">
+            <h2 id="resultTitle"></h2>
+            <p id="correctAnswer"></p>
+            <h3>Classifica</h3>
+            <ol id="leaderboard"></ol>
+        </div>
+        <div id="log" class="log"></div>
+    </div>
+    <script src="js/ws-client.js"></script>
+    <script src="js/play.js"></script>
+</body>
+</html>

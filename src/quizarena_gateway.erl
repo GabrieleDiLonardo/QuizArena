@@ -6,52 +6,57 @@
 
 -define(PIN_GENERATION_ATTEMPTS, 20).
 
-%% Avvia e registra il gateway come processo gen_server
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-%% Inizializza lo stato, la funzione è richiesta da gen_server
 init([]) ->
     {ok, #{}}.
 
-%% Rifiuta le chiamate sincrone gen_server, non usate dal protocollo Java
 handle_call(_Request, _From, State) ->
     {reply, {error, unsupported_call}, State}.
 
-%% Ignora le richieste asincrone gen_server, non usate dal protocollo Java
 handle_cast(_Request, State) ->
     {noreply, State}.
 
-%% Le funzioni successive gestiscono i messaggi applicativi ricevuti tramite il protocollo Java-Erlang
-%% Test per verificare che il gateway comunichi con Java
+%% ---------- Ping ----------
 handle_info({JavaPid, Ref, ping}, State)
   when is_pid(JavaPid), is_reference(Ref) ->
     JavaPid ! {Ref, {ok, pong}},
     {noreply, State};
 
-%% Recupera dal database la lista dei quiz e la restituisce a Java
+%% ---------- Quiz ----------
 handle_info({JavaPid, Ref, list_quizzes}, State)
   when is_pid(JavaPid), is_reference(Ref) ->
-    Result =
-        case quizarena_db:list_quizzes() of
-            {error, Reason} ->
-                {error, Reason};
-            Quizzes when is_list(Quizzes) ->
-                {ok, Quizzes}
-        end,
+    Result = case quizarena_db:list_quizzes() of
+        {error, Reason} -> {error, Reason};
+        Quizzes when is_list(Quizzes) -> {ok, Quizzes}
+    end,
     JavaPid ! {Ref, Result},
     {noreply, State};
 
+handle_info({JavaPid, Ref, {get_quiz, QuizId}}, State)
+  when is_pid(JavaPid), is_reference(Ref) ->
+    Result = case quizarena_db:get_quiz(QuizId) of
+        {ok, Quiz} -> {ok, Quiz};
+        {error, Reason} -> {error, Reason}
+    end,
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {get_history, User}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(User) ->
+    Result = case quizarena_db:get_history(User) of
+        {error, Reason} -> {error, Reason};
+        History when is_list(History) -> {ok, History}
+    end,
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+%% ---------- Stanze ----------
 handle_info({JavaPid, Ref, {create_room, QuizId, HostName}}, State)
-  when is_pid(JavaPid), is_reference(Ref),
-       is_tuple(QuizId), is_list(HostName) ->
+  when is_pid(JavaPid), is_reference(Ref), is_tuple(QuizId), is_list(HostName) ->
     Result = create_room(QuizId, HostName, JavaPid),
     JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {create_room, _QuizId, _HostName}}, State)
-  when is_pid(JavaPid), is_reference(Ref) ->
-    JavaPid ! {Ref, {error, invalid_request}},
     {noreply, State};
 
 handle_info({JavaPid, Ref, {cancel_room, Pin}}, State)
@@ -60,25 +65,81 @@ handle_info({JavaPid, Ref, {cancel_room, Pin}}, State)
     JavaPid ! {Ref, Result},
     {noreply, State};
 
-handle_info({JavaPid, Ref, {cancel_room, _Pin}}, State)
+handle_info({JavaPid, Ref, list_rooms}, State)
   when is_pid(JavaPid), is_reference(Ref) ->
-    JavaPid ! {Ref, {error, invalid_request}},
+    JavaPid ! {Ref, {ok, list_open_rooms()}},
     {noreply, State};
 
-%% Restituisce un errore quando Java richiede un'operazione non supportata
+%% ---------- Gioco ----------
+handle_info({JavaPid, Ref, {join, Pin, Nickname}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Pin), is_list(Nickname) ->
+    Result = safe_call(fun() -> room_gen_server:join(Pin, Nickname, JavaPid) end),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {rejoin, Pin, PlayerId}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Pin), is_integer(PlayerId) ->
+    Result = safe_call(fun() -> room_gen_server:rejoin(Pin, PlayerId, JavaPid) end),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {start_game, Pin}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
+    Result = safe_call(fun() -> room_gen_server:start_game(Pin, JavaPid) end),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {next_round, Pin}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
+    Result = safe_call(fun() -> room_gen_server:next_round(Pin, JavaPid) end),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {answer, Pin, PlayerId, Round, Answer}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Pin),
+       is_integer(PlayerId), is_integer(Round), is_list(Answer) ->
+    Result = safe_call(fun() -> room_gen_server:answer(Pin, PlayerId, Round, Answer) end),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {end_game, Pin}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
+    Result = safe_call(fun() -> room_gen_server:end_game(Pin, JavaPid) end),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {get_events_since, Pin, SinceSeq}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Pin), is_integer(SinceSeq) ->
+    Result = safe_call(fun() -> room_gen_server:get_events_since(Pin, SinceSeq) end),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+%% ---------- Fallback ----------
 handle_info({JavaPid, Ref, _Request}, State)
   when is_pid(JavaPid), is_reference(Ref) ->
     JavaPid ! {Ref, {error, unsupported_request}},
     {noreply, State};
 
-%% Ignora i messaggi che non rispettano il formato del protocollo
 handle_info(_Message, State) ->
     {noreply, State}.
 
-%% Avvia la creazione della stanza
+%% ---------- Helper ----------
+
+safe_call(Fun) ->
+    try Fun() of
+        {ok, _} = Ok -> Ok;
+        {error, _} = Err -> Err;
+        ok -> {ok, ok};
+        Other -> {error, {unexpected, Other}}
+    catch
+        exit:{noproc, _} -> {error, room_not_found};
+        exit:{timeout, _} -> {error, timeout};
+        exit:{nodedown, _} -> {error, node_down};
+        exit:Reason -> {error, {call_failed, Reason}}
+    end.
+
 create_room(QuizId, HostName, HostPid) ->
-    try_create_room(QuizId, HostName, HostPid,
-                    ?PIN_GENERATION_ATTEMPTS).
+    try_create_room(QuizId, HostName, HostPid, ?PIN_GENERATION_ATTEMPTS).
 
 try_create_room(_QuizId, _HostName, _HostPid, 0) ->
     {error, pin_generation_failed};
@@ -87,78 +148,73 @@ try_create_room(QuizId, HostName, HostPid, AttemptsLeft) ->
     case global:whereis_name({room, Pin}) of
         undefined ->
             open_session_and_start_room(
-                Pin, QuizId, HostName, HostPid, AttemptsLeft
-            );
+                Pin, QuizId, HostName, HostPid, AttemptsLeft);
         _RoomPid ->
-            try_create_room(
-                QuizId, HostName, HostPid, AttemptsLeft - 1
-            )
+            try_create_room(QuizId, HostName, HostPid, AttemptsLeft - 1)
     end.
 
-%% Crea la sessione in Mnesia e poi avvia il processo che gestisce la stanza
-open_session_and_start_room(Pin, QuizId, HostName, HostPid,
-                            AttemptsLeft) ->
+open_session_and_start_room(Pin, QuizId, HostName, HostPid, AttemptsLeft) ->
     case quizarena_db:open_session(Pin, QuizId, HostName) of
         {ok, _QuestionCount} ->
             case safe_start_room(Pin, HostPid) of
                 {ok, _RoomPid} ->
                     {ok, Pin};
                 {error, {room_already_registered, Pin}} ->
-                    retry_after_rollback(
-                        Pin, QuizId, HostName, HostPid, AttemptsLeft
-                    );
+                    retry_after_rollback(Pin, QuizId, HostName, HostPid, AttemptsLeft);
                 {error, Reason} ->
                     room_start_error_after_rollback(Pin, Reason)
             end;
         {error, pin_taken} ->
-            try_create_room(
-                QuizId, HostName, HostPid, AttemptsLeft - 1
-            );
+            try_create_room(QuizId, HostName, HostPid, AttemptsLeft - 1);
         {error, Reason} ->
             {error, Reason}
     end.
 
 safe_start_room(Pin, HostPid) ->
-    try room_sup:start_room(Pin, HostPid) of
-        Result -> Result
-    catch
-        Class:Reason -> {error, {Class, Reason}}
-    end.
+    try room_sup:start_room(Pin, HostPid)
+    catch Class:Reason -> {error, {Class, Reason}} end.
 
-%% Annulla la sessione se il PIN è stato registrato nel frattempo e riprova con un nuovo PIN
 retry_after_rollback(Pin, QuizId, HostName, HostPid, AttemptsLeft) ->
     case quizarena_db:abort_session(Pin) of
-        ok ->
-            try_create_room(
-                QuizId, HostName, HostPid, AttemptsLeft - 1
-            );
-        {error, RollbackReason} ->
-            {error, {rollback_failed, RollbackReason}}
+        ok -> try_create_room(QuizId, HostName, HostPid, AttemptsLeft - 1);
+        {error, RollbackReason} -> {error, {rollback_failed, RollbackReason}}
     end.
 
-%% Annulla la sessione se la stanza non parte e restituisce l'errore di avvio
 room_start_error_after_rollback(Pin, StartReason) ->
     case quizarena_db:abort_session(Pin) of
-        ok ->
-            {error, {room_start_failed, StartReason}};
+        ok -> {error, {room_start_failed, StartReason}};
         {error, RollbackReason} ->
-            {error, {
-                room_start_failed,
-                StartReason,
-                rollback_failed,
-                RollbackReason
-            }}
+            {error, {room_start_failed, StartReason, rollback_failed, RollbackReason}}
     end.
 
 cancel_room(Pin, HostPid) ->
-    try room_gen_server:cancel(Pin, HostPid) of
-        ok -> {ok, cancelled};
-        {error, Reason} -> {error, Reason}
+    try room_gen_server:cancel(Pin, HostPid)
     catch
         exit:{noproc, _} -> {error, room_not_found};
         exit:Reason -> {error, {room_call_failed, Reason}}
     end.
 
-%% Genera un PIN casuale di sei cifre
+list_open_rooms() ->
+    Names = global:registered_names(),
+    RoomNames = [N || {room, _} = N <- Names],
+    lists:filtermap(fun room_summary/1, RoomNames).
+
+room_summary({room, Pin} = Name) ->
+    case global:whereis_name(Name) of
+        undefined -> false;
+        _Pid ->
+            try room_gen_server:get_state(Pin) of
+                State ->
+                    {true, #{
+                        pin => Pin,
+                        status => maps:get(status, State, unknown),
+                        num_players => maps:size(maps:get(players, State, #{})),
+                        num_questions => length(maps:get(quiz_questions, State, []))
+                    }}
+            catch
+                _:_ -> false
+            end
+    end.
+
 generate_pin() ->
     integer_to_list(100000 + rand:uniform(900000) - 1).
