@@ -63,7 +63,7 @@ function handleMessage(msg) {
 // ===== Caricamento e render della lista quiz =====
 function loadQuizzes() {
     document.getElementById('quizList').innerHTML = 'Caricamento...';
-    ws.send({action: 'list_quizzes'});
+    ws.send({action: 'list_owned_quizzes'});
 }
 
 function renderQuizzes(quizzes) {
@@ -95,20 +95,19 @@ function createRoomWithQuiz(quiz) {
         quizId: {
             timestampMicros: quiz.id.timestampMicros,
             uniqueInteger: quiz.id.uniqueInteger
-        },
-        hostName: 'host'
+        }
     });
 }
 
 // ===== Gestione eventi di gioco =====
 function handleEvent(ev) {
-    if (ev.type === 'player_joined') {
-        if (!players.includes(ev.nickname)) {
-            players.push(ev.nickname);
+    if (ev.type === 'player_joined' || ev.type === 'player_rejoined') {
+        if (!players.includes(ev.username)) {
+            players.push(ev.username);
         }
         updatePlayerList();
     } else if (ev.type === 'player_disconnected') {
-        players = players.filter(p => p !== ev.nickname);
+        players = players.filter(p => p !== ev.username);
         updatePlayerList();
     } else if (ev.type === 'game_started') {
         document.getElementById('step2').style.display = 'none';

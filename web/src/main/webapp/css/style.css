@@ -241,3 +241,28 @@ li { padding: 6px 0; }
     margin: 10px 0;
     font-family: monospace;
 }
+
+.auth-form {
+    max-width: 520px;
+}
+
+.auth-form label {
+    display: block;
+    margin-top: 12px;
+    font-weight: 600;
+}
+
+.error-message, .success-message {
+    padding: 12px;
+    border-radius: 6px;
+}
+
+.error-message {
+    background: #ffe8e8;
+    color: #8b1a1a;
+}
+
+.success-message {
+    background: #e7f7ed;
+    color: #176b38;
+}

@@ -1,7 +1,6 @@
 "use strict";
 
 const gameCreation = document.getElementById("game-creation");
-const hostNameInput = document.getElementById("host-name");
 const createRoomButtons = document.querySelectorAll(".create-room");
 const gameStatus = document.getElementById("game-status");
 const gameError = document.getElementById("game-error");
@@ -53,7 +52,6 @@ socket.addEventListener("message", (event) => {
     if (message.type === "room_created") {
         requestPending = false;
         roomCreated = true;
-        hostNameInput.disabled = true;
         roomPin.textContent = message.pin;
         gameResult.hidden = false;
         startGameButton.hidden = false;
@@ -110,13 +108,6 @@ createRoomButtons.forEach((button) => {
             return;
         }
 
-        const hostName = hostNameInput.value.trim();
-        if (hostName === "") {
-            showError("Inserisci il nome dell'host.");
-            hostNameInput.focus();
-            return;
-        }
-
         requestPending = true;
         gameError.hidden = true;
         gameResult.hidden = true;
@@ -129,8 +120,7 @@ createRoomButtons.forEach((button) => {
                 quizId: {
                     timestampMicros: button.dataset.timestampMicros,
                     uniqueInteger: button.dataset.uniqueInteger
-                },
-                hostName
+                }
             }));
         } catch (exception) {
             requestPending = false;

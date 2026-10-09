@@ -76,11 +76,11 @@ public class ErlangGameSession implements AutoCloseable {
 
     public String createRoom(
             QuizId quizId,
-            String hostName,
+            String hostUsername,
             long timeoutMillis
     ) throws IOException, ErlangServiceException {
         Objects.requireNonNull(quizId, "quizId must not be null");
-        requireText(hostName, "hostName");
+        requireText(hostUsername, "hostUsername");
 
         OtpErlangTuple erlangQuizId = new OtpErlangTuple(
                 new OtpErlangObject[] {
@@ -92,7 +92,7 @@ public class ErlangGameSession implements AutoCloseable {
                 new OtpErlangObject[] {
                     new OtpErlangAtom("create_room"),
                     erlangQuizId,
-                    new OtpErlangString(hostName)
+                    new OtpErlangString(hostUsername)
                 }
         );
 
@@ -123,29 +123,102 @@ public class ErlangGameSession implements AutoCloseable {
         mailbox.send(gatewayName, remoteNode, requestMessage);
     }
 
-    public long join(String pin, String nickname, long timeoutMillis)
+    public void join(
+            String pin,
+            String username,
+            long timeoutMillis
+    )
             throws IOException, ErlangServiceException {
         requireText(pin, "pin");
-        requireText(nickname, "nickname");
+        requireText(username, "username");
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
             new OtpErlangAtom("join"),
             new OtpErlangString(pin),
-            new OtpErlangString(nickname)
+            new OtpErlangString(username)
         });
         OtpErlangObject result = sendRequest(request, timeoutMillis);
-        return decodeLongResult(result, "playerId");
+        decodeOkResult(result);
     }
 
-    public long rejoin(String pin, long playerId, long timeoutMillis)
+    public void rejoin(
+            String pin,
+            String username,
+            long timeoutMillis
+    )
             throws IOException, ErlangServiceException {
         requireText(pin, "pin");
+        requireText(username, "username");
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
             new OtpErlangAtom("rejoin"),
             new OtpErlangString(pin),
-            new OtpErlangLong(playerId)
+            new OtpErlangString(username)
         });
         OtpErlangObject result = sendRequest(request, timeoutMillis);
-        return decodeLongResult(result, "playerId");
+        decodeOkResult(result);
+    }
+
+    public void disconnectPlayer(String pin) {
+        requireText(pin, "pin");
+        if (!open.get()) {
+            return;
+        }
+
+        OtpErlangRef reference = node.createRef();
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("disconnect"),
+                    new OtpErlangString(pin)
+                }
+        );
+        OtpErlangTuple requestMessage = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    mailbox.self(),
+                    reference,
+                    request
+                }
+        );
+        mailbox.send(gatewayName, remoteNode, requestMessage);
+    }
+
+    public void cancelRoom(String pin, long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("cancel_room"),
+                    new OtpErlangString(pin)
+                }
+        );
+        decodeOkResult(sendRequest(request, timeoutMillis));
+    }
+
+    public Object getPlayerState(
+            String pin,
+            String username,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        requireText(username, "username");
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("get_player_state"),
+                    new OtpErlangString(pin),
+                    new OtpErlangString(username)
+                }
+        );
+        OtpErlangObject result = sendRequest(request, timeoutMillis);
+        if (!(result instanceof OtpErlangTuple tuple)
+                || tuple.arity() != 2) {
+            throw new IOException("Malformed player state result");
+        }
+        if (new OtpErlangAtom("error").equals(tuple.elementAt(0))) {
+            throw new ErlangServiceException(
+                    tuple.elementAt(1).toString());
+        }
+        if (!new OtpErlangAtom("ok").equals(tuple.elementAt(0))) {
+            throw new IOException("Unknown player state result");
+        }
+        return ErlangTermConverter.toJavaValue(tuple.elementAt(1));
     }
 
     public void startGame(String pin, long timeoutMillis)
@@ -168,7 +241,7 @@ public class ErlangGameSession implements AutoCloseable {
         decodeOkResult(sendRequest(request, timeoutMillis));
     }
 
-    public void answer(String pin, long playerId, long round, String answer,
+    public void answer(String pin, long round, String answer,
                        long timeoutMillis)
             throws IOException, ErlangServiceException {
         requireText(pin, "pin");
@@ -176,7 +249,6 @@ public class ErlangGameSession implements AutoCloseable {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
             new OtpErlangAtom("answer"),
             new OtpErlangString(pin),
-            new OtpErlangLong(playerId),
             new OtpErlangLong(round),
             new OtpErlangString(answer)
         });
@@ -373,23 +445,6 @@ public class ErlangGameSession implements AutoCloseable {
         );
     }
 
-    private static long decodeLongResult(OtpErlangObject result, String ctx)
-            throws IOException, ErlangServiceException {
-        if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
-            throw new IOException("Malformed result from " + ctx);
-        }
-        if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
-            throw new ErlangServiceException(t.elementAt(1).toString());
-        }
-        if (!new OtpErlangAtom("ok").equals(t.elementAt(0))) {
-            throw new IOException("Unknown status from " + ctx);
-        }
-        if (!(t.elementAt(1) instanceof OtpErlangLong v)) {
-            throw new IOException("Expected long from " + ctx);
-        }
-        return v.longValue();
-    }
-
     private static void decodeOkResult(OtpErlangObject result)
             throws IOException, ErlangServiceException {
         if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
@@ -398,27 +453,9 @@ public class ErlangGameSession implements AutoCloseable {
         if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
             throw new ErlangServiceException(t.elementAt(1).toString());
         }
-        // {ok, ok} oppure {ok, Value}
-    }
-
-    private static void decodeAtomResult(
-            OtpErlangObject result,
-            String expectedAtom
-    ) throws IOException, ErlangServiceException {
-        if (!(result instanceof OtpErlangTuple tuple)
-                || tuple.arity() != 2) {
-            throw new IOException("Malformed result from Erlang gateway");
-        }
-
-        OtpErlangObject status = tuple.elementAt(0);
-        OtpErlangObject content = tuple.elementAt(1);
-
-        if (new OtpErlangAtom("error").equals(status)) {
-            throw new ErlangServiceException(content.toString());
-        }
-        if (!new OtpErlangAtom("ok").equals(status)
-                || !new OtpErlangAtom(expectedAtom).equals(content)) {
-            throw new IOException("Unexpected result from Erlang gateway");
+        if (!new OtpErlangAtom("ok").equals(t.elementAt(0))
+                || !new OtpErlangAtom("ok").equals(t.elementAt(1))) {
+            throw new IOException("Expected {ok, ok} from Erlang gateway");
         }
     }
 

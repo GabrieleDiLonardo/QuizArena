@@ -40,12 +40,6 @@
     <% } else { %>
         <section id="game-creation"
                  data-context-path="<%= escapeHtml(request.getContextPath()) %>">
-            <p>
-                <label for="host-name">Nome dell'host:</label>
-                <input id="host-name" name="hostName" maxlength="50"
-                       autocomplete="nickname" required>
-            </p>
-
             <ul>
                 <% for (QuizSummary quiz : quizzes) { %>
                     <li>

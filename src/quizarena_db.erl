@@ -1,14 +1,15 @@
 -module(quizarena_db).
 -export([init/0,
+         %% Utenti
+         create_user/2, get_user/1,
          %% PIN e sessioni
-         claim_pin/2, release_pin/1,
          open_session/3, abort_session/1, mark_session_started/1,
-         cancel_session/1, close_session/1, finish_session/2,
+         cancel_session/1, finish_session/2,
          %% Storico
          get_history/1,
          %% Quiz CRUD
-         create_quiz/2, get_quiz/1, update_quiz/2,
-         delete_quiz/1, list_quizzes/0, list_quizzes_by_owner/1,
+         create_quiz/2, get_quiz/2, update_quiz/3,
+         delete_quiz/2, list_quizzes_by_owner/1,
          clear_quizzes/0, seed_quizzes/0]).
 
 init() ->
@@ -29,7 +30,7 @@ init() ->
 
     create_table(users,
         [{disc_copies, Nodes},
-         {attributes, [id, username, password_hash, created_at]}]),
+         {attributes, [username, credentials]}]),
 
     create_table(quizzes,
         [{disc_copies, Nodes},
@@ -72,29 +73,38 @@ create_table(Name, Args) ->
         {aborted, Reason} -> erlang:error({mnesia_create_failed, Name, Reason})
     end.
 
+%% ---------- Utenti ----------
+
+%% Registra username e credenziali solo se lo username non esiste gia'.
+create_user(Username, Credentials)
+  when is_list(Username), is_map(Credentials) ->
+    F = fun() ->
+        case mnesia:read(users, Username, write) of
+            [] ->
+                mnesia:write({users, Username, Credentials}),
+                ok;
+            [_User] ->
+                {error, username_taken}
+        end
+    end,
+    transaction_result(F).
+
+%% Recupera le credenziali associate a uno username.
+get_user(Username) when is_list(Username) ->
+    F = fun() ->
+        case mnesia:read(users, Username, read) of
+            [{users, Username, Credentials}] -> {ok, Credentials};
+            [] -> {error, not_found}
+        end
+    end,
+    transaction_result(F).
+
 %% ---------- ID univoci ----------
 
 %% Genera un ID univoco basato sul timestamp in microsecondi.
 %% Unico anche dopo riavvio del nodo (a differenza di unique_integer).
 new_id() ->
     {erlang:system_time(microsecond), erlang:unique_integer([positive])}.
-
-%% ---------- PIN ----------
-
-claim_pin(Pin, SessionId) ->
-    F = fun() ->
-        case mnesia:read(session_pins, Pin) of
-            [] ->
-                mnesia:write({session_pins, Pin, SessionId}),
-                ok;
-            _ -> {error, taken}
-        end
-    end,
-    mnesia:transaction(F).
-
-release_pin(Pin) ->
-    F = fun() -> mnesia:delete({session_pins, Pin}) end,
-    mnesia:transaction(F).
 
 %% ---------- Sessioni ----------
 
@@ -105,7 +115,7 @@ open_session(Pin, QuizId, Host) ->
             [] ->
                 case mnesia:read(quizzes, QuizId) of
                     [] -> {error, quiz_not_found};
-                    [{quizzes, QuizId, _Owner, _Title, _Desc}] ->
+                    [{quizzes, QuizId, Host, _Title, _Desc}] ->
                         RawQs = mnesia:index_read(questions, QuizId, quiz_id),
                         Qs = lists:keysort(1, RawQs),
                         case Qs of
@@ -123,7 +133,9 @@ open_session(Pin, QuizId, Host) ->
                                       N + 1
                                   end, 1, Qs),
                                 {ok, length(Qs)}
-                        end
+                        end;
+                    [{quizzes, QuizId, _OtherOwner, _Title, _Desc}] ->
+                        {error, not_owner}
                 end
         end
     end,
@@ -186,21 +198,6 @@ cancel_session(Pin) ->
     end,
     transaction_result(F).
 
-%% Porta una sessione da playing a finished senza salvare nuovi risultati
-close_session(Pin) ->
-    F = fun() ->
-        case mnesia:read(sessions, Pin, write) of
-            [{sessions, Pin, QuizId, Host, playing, StartedAt}] ->
-                mnesia:write({sessions, Pin, QuizId, Host, finished, StartedAt}),
-                ok;
-            [{sessions, Pin, _QuizId, _Host, Status, _StartedAt}] ->
-                {error, {invalid_status, Status}};
-            [] ->
-                {error, session_not_found}
-        end
-    end,
-    transaction_result(F).
-
 %% Salva tutti i risultati e conclude la sessione nella stessa transazione
 finish_session(Pin, PlayerResults) when is_list(PlayerResults) ->
     F = fun() ->
@@ -208,8 +205,8 @@ finish_session(Pin, PlayerResults) when is_list(PlayerResults) ->
             [{sessions, Pin, QuizId, Host, playing, StartedAt}] ->
                 FinishedAt = erlang:system_time(millisecond),
                 lists:foreach(
-                    fun({Nickname, Score}) ->
-                        mnesia:write({results, Pin, Nickname,
+                    fun({Username, Score}) ->
+                        mnesia:write({results, Pin, Username,
                                       Score, FinishedAt})
                     end,
                     PlayerResults
@@ -239,8 +236,8 @@ transaction_result(F) ->
 
 %% ---------- Storico ----------
 
-get_history(UserId) ->
-    F = fun() -> mnesia:index_read(results, UserId, user_id) end,
+get_history(Username) ->
+    F = fun() -> mnesia:index_read(results, Username, user_id) end,
     case mnesia:transaction(F) of
         {atomic, Rows} ->
             [{SessionId, Score, FinishedAt}
@@ -269,7 +266,7 @@ create_quiz(Owner, #{title := Title, description := Desc,
         {aborted, Reason} -> {error, Reason}
     end.
 
-get_quiz(QuizId) ->
+get_quiz(Owner, QuizId) ->
     F = fun() ->
         case mnesia:read(quizzes, QuizId) of
             [] -> {error, not_found};
@@ -280,7 +277,9 @@ get_quiz(QuizId) ->
                            correct => Corr, time_limit => TL}
                          || {questions, _, _, Text, Ans, Corr, TL} <- Qs],
                 {ok, #{id => QuizId, owner => Owner, title => Title,
-                       description => Desc, questions => QsOut}}
+                       description => Desc, questions => QsOut}};
+            [{quizzes, QuizId, _OtherOwner, _Title, _Desc}] ->
+                {error, not_owner}
         end
     end,
     case mnesia:transaction(F) of
@@ -288,10 +287,10 @@ get_quiz(QuizId) ->
         {aborted, Reason} -> {error, Reason}
     end.
 
-update_quiz(QuizId, #{title := Title, description := Desc,
-                      questions := Questions}) ->
+update_quiz(Owner, QuizId, #{title := Title, description := Desc,
+                             questions := Questions}) ->
     F = fun() ->
-        case mnesia:read(quizzes, QuizId) of
+        case mnesia:read(quizzes, QuizId, write) of
             [] -> {error, not_found};
             [{quizzes, QuizId, Owner, _OldTitle, _OldDesc}] ->
                 mnesia:write({quizzes, QuizId, Owner, Title, Desc}),
@@ -307,7 +306,9 @@ update_quiz(QuizId, #{title := Title, description := Desc,
                                  maps:get(correct, Q),
                                  maps:get(time_limit, Q, 60000)})
                 end, Questions),
-                ok
+                ok;
+            [{quizzes, QuizId, _OtherOwner, _OldTitle, _OldDesc}] ->
+                {error, not_owner}
         end
     end,
     case mnesia:transaction(F) of
@@ -315,30 +316,23 @@ update_quiz(QuizId, #{title := Title, description := Desc,
         {aborted, Reason} -> {error, Reason}
     end.
 
-delete_quiz(QuizId) ->
+delete_quiz(Owner, QuizId) ->
     F = fun() ->
-        case mnesia:read(quizzes, QuizId) of
+        case mnesia:read(quizzes, QuizId, write) of
             [] -> {error, not_found};
-            [_] ->
+            [{quizzes, QuizId, Owner, _Title, _Desc}] ->
                 OldQs = mnesia:index_read(questions, QuizId, quiz_id),
                 lists:foreach(fun({questions, QId, _, _, _, _, _}) ->
                     mnesia:delete({questions, QId})
                 end, OldQs),
                 mnesia:delete({quizzes, QuizId}),
-                ok
+                ok;
+            [{quizzes, QuizId, _OtherOwner, _Title, _Desc}] ->
+                {error, not_owner}
         end
     end,
     case mnesia:transaction(F) of
         {atomic, Result} -> Result;
-        {aborted, Reason} -> {error, Reason}
-    end.
-
-list_quizzes() ->
-    F = fun() -> mnesia:foldl(fun(Q, Acc) -> [Q | Acc] end, [], quizzes) end,
-    case mnesia:transaction(F) of
-        {atomic, Rows} ->
-            [#{id => Id, owner => Owner, title => Title, description => Desc}
-             || {quizzes, Id, Owner, Title, Desc} <- Rows];
         {aborted, Reason} -> {error, Reason}
     end.
 

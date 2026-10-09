@@ -17,7 +17,6 @@ class QuizWsClient {
 
         this.ws.onopen = () => {
             this.connected = true;
-            this.emit({type: 'connected'});
         };
         this.ws.onmessage = (e) => {
             try {

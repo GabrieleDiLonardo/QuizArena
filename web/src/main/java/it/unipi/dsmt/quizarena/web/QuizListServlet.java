@@ -12,6 +12,7 @@ import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 
 @WebServlet(name = "quizListServlet", value = "/quizzes")
 public final class QuizListServlet extends HttpServlet {
@@ -44,10 +45,21 @@ public final class QuizListServlet extends HttpServlet {
             return;
         }
 
+        HttpSession session = request.getSession(false);
+        String owner = AuthenticationSession.username(session);
+        if (owner == null) {
+            response.sendError(
+                    HttpServletResponse.SC_UNAUTHORIZED,
+                    "Authentication required"
+            );
+            return;
+        }
+
         try {
-            List<QuizSummary> quizzes = client.listQuizzes(
+            List<QuizSummary> quizzes = client.listOwnedQuizzes(
                     backendNode,
                     gatewayName,
+                    owner,
                     ERLANG_TIMEOUT_MILLIS
             );
             request.setAttribute("quizzes", quizzes);

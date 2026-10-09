@@ -12,11 +12,12 @@ ws.connect();
 
 // ===== Stato locale =====
 let currentPin = null;
-let currentPlayerId = null;
+let currentUsername = null;
 let currentRound = null;
 let answered = false;
 let timerInterval = null;
 let roundDeadline = 0;
+let rejoinPending = false;
 
 // ===== Precompila il PIN dall'URL (da lobby.html?pin=XXX) =====
 (function prefillPin() {
@@ -24,41 +25,58 @@ let roundDeadline = 0;
     const pin = params.get('pin');
     if (pin) {
         document.getElementById('pinInput').value = pin;
-        document.getElementById('nickInput').focus();
+        document.getElementById('joinBtn').focus();
     }
 })();
 
 // ===== Handlers pulsanti =====
 document.getElementById('joinBtn').onclick = () => {
     const pin = document.getElementById('pinInput').value.trim();
-    const nick = document.getElementById('nickInput').value.trim();
-    if (!pin || !nick) {
-        alert('Inserisci PIN e nickname');
+    if (!pin) {
+        alert('Inserisci il PIN');
         return;
     }
-    localStorage.setItem('qa_nickname', nick);  
-    ws.send({action: 'join', pin: pin, nickname: nick});
+    ws.send({action: 'join', pin: pin});
 };
 
 // ===== Gestione messaggi dal server =====
 function handleMessage(msg) {
     log('← ' + JSON.stringify(msg));
 
-    if (msg.type === 'connected') return;
+    if (msg.type === 'connected') {
+        const savedPin = localStorage.getItem('qa_pin');
+        if (savedPin) {
+            rejoinPending = true;
+            ws.send({action: 'rejoin', pin: savedPin});
+        }
+        return;
+    }
 
     if (msg.type === 'joined') {
         currentPin = msg.pin;
-        currentPlayerId = msg.playerId;
+        currentUsername = msg.username;
         localStorage.setItem('qa_pin', msg.pin);
-        localStorage.setItem('qa_playerId', String(msg.playerId));
         document.getElementById('step1').style.display = 'none';
         document.getElementById('step2').style.display = 'block';
         document.getElementById('statusMsg').textContent =
-            `Connesso come player #${msg.playerId}`;
+            `Connesso come ${msg.username}`;
+        return;
+    }
+    if (msg.type === 'rejoined') {
+        rejoinPending = false;
+        currentPin = msg.pin;
+        currentUsername = msg.state.username;
+        localStorage.setItem('qa_pin', msg.pin);
+        restorePlayerState(msg.state);
         return;
     }
     if (msg.type === 'ok') return;
     if (msg.type === 'error') {
+        if (rejoinPending) {
+            rejoinPending = false;
+            currentPin = null;
+            localStorage.removeItem('qa_pin');
+        }
         alert('Errore: ' + msg.message);
         return;
     }
@@ -70,9 +88,11 @@ function handleMessage(msg) {
 // ===== Gestione eventi di gioco =====
 function handleEvent(ev) {
     if (ev.type === 'player_joined') {
-        log(`Entrato: ${ev.nickname}`);
+        log(`Entrato: ${ev.username}`);
     } else if (ev.type === 'player_disconnected') {
-        log(`Uscito: ${ev.nickname}`);
+        log(`Uscito: ${ev.username}`);
+    } else if (ev.type === 'player_rejoined') {
+        log(`Rientrato: ${ev.username}`);
     } else if (ev.type === 'game_started') {
         document.getElementById('step2').style.display = 'none';
         document.getElementById('statusMsg').textContent = 'Partita iniziata!';
@@ -84,6 +104,16 @@ function handleEvent(ev) {
     } else if (ev.type === 'game_finished') {
         stopTimer();
         showFinal(ev);
+    } else if (ev.type === 'game_cancelled') {
+        stopTimer();
+        currentPin = null;
+        localStorage.removeItem('qa_pin');
+        document.getElementById('step2').style.display = 'none';
+        document.getElementById('step3').style.display = 'none';
+        document.getElementById('step4').style.display = 'none';
+        document.getElementById('step1').style.display = 'block';
+        alert('Partita cancellata: ' +
+            (ev.reason || 'motivo sconosciuto'));
     }
 }
 
@@ -112,7 +142,8 @@ function showRound(ev) {
     });
 
     // Timer basato su timestamp assoluto (no drift)
-    roundDeadline = Date.now() + ev.question.time_limit;
+    const remainingTime = ev.remaining_time ?? ev.question.time_limit;
+    roundDeadline = Date.now() + remainingTime;
     timerInterval = setInterval(updateTimer, 100);
     updateTimer();
 }
@@ -146,7 +177,6 @@ function submitAnswer(answer, btn) {
     btn.classList.add('selected');
     ws.send({
         action: 'answer',
-        playerId: currentPlayerId,
         round: currentRound,
         answer: answer
     });
@@ -160,19 +190,12 @@ function showResults(ev) {
     document.getElementById('correctAnswer').textContent =
         `Risposta corretta: ${ev.correct}`;
 
-    // Trova il proprio punteggio
-    const myNickname = localStorage.getItem('qa_nickname');
     const yourScoreEl = document.getElementById('yourScore');
-    if (myNickname) {
-        const row = ev.leaderboard.find(([name]) => name === myNickname);
-        if (row) {
-            yourScoreEl.textContent = `Il tuo punteggio: ${row[1]}`;
-        } else {
-            yourScoreEl.textContent = '';
-        }
-    } else {
-        yourScoreEl.textContent = '';
-    }
+    const ownScore = ev.leaderboard.find(([name]) =>
+        name === currentUsername);
+    yourScoreEl.textContent = ownScore
+        ? `Il tuo punteggio: ${ownScore[1]}`
+        : '';
 
     renderLeaderboard(ev.leaderboard);
 }
@@ -184,8 +207,52 @@ function showFinal(ev) {
     document.getElementById('correctAnswer').textContent = '';
     document.getElementById('yourScore').textContent = '';
     renderLeaderboard(ev.final_leaderboard);
+    currentPin = null;
     localStorage.removeItem('qa_pin');
-    localStorage.removeItem('qa_playerId');
+}
+
+function restorePlayerState(state) {
+    document.getElementById('step1').style.display = 'none';
+    document.getElementById('step2').style.display = 'none';
+    document.getElementById('step3').style.display = 'none';
+    document.getElementById('step4').style.display = 'none';
+
+    if (!state || state.status === 'waiting') {
+        document.getElementById('step2').style.display = 'block';
+        document.getElementById('statusMsg').textContent =
+            'Riconnesso. In attesa dell’host...';
+        return;
+    }
+    if (state.status === 'playing') {
+        document.getElementById('step2').style.display = 'block';
+        document.getElementById('statusMsg').textContent =
+            'Riconnesso. In attesa del prossimo round...';
+        return;
+    }
+    if (state.status === 'round_open') {
+        showRound({
+            round: state.current_round,
+            question: state.question,
+            remaining_time: state.remaining_time
+        });
+        if (state.answered) {
+            answered = true;
+            stopTimer();
+            document.querySelectorAll('.answer-btn').forEach(button => {
+                button.disabled = true;
+            });
+            document.getElementById('timerDisplay').textContent =
+                'Risposta già inviata. Attendi la chiusura del round.';
+        }
+        return;
+    }
+    if (state.status === 'round_closed') {
+        showResults({
+            round: state.current_round,
+            correct: state.correct,
+            leaderboard: state.leaderboard
+        });
+    }
 }
 
 function renderLeaderboard(lb) {

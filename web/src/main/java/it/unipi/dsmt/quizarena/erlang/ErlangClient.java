@@ -13,11 +13,15 @@ import com.ericsson.otp.erlang.OtpErlangLong;
 import com.ericsson.otp.erlang.OtpErlangMap;
 import com.ericsson.otp.erlang.OtpErlangObject;
 import com.ericsson.otp.erlang.OtpErlangRef;
+import com.ericsson.otp.erlang.OtpErlangString;
 import com.ericsson.otp.erlang.OtpErlangTuple;
 import com.ericsson.otp.erlang.OtpMbox;
 import com.ericsson.otp.erlang.OtpNode;
 
 import it.unipi.dsmt.quizarena.model.QuizId;
+import it.unipi.dsmt.quizarena.model.QuizDetails;
+import it.unipi.dsmt.quizarena.model.QuizDraft;
+import it.unipi.dsmt.quizarena.model.QuizQuestion;
 import it.unipi.dsmt.quizarena.model.QuizSummary;
 
 public final class ErlangClient implements AutoCloseable {
@@ -92,19 +96,160 @@ public final class ErlangClient implements AutoCloseable {
         }
     }
 
-    // Richiede al gateway l'elenco sintetico dei quiz disponibili
-    public List<QuizSummary> listQuizzes(
+    // Registra un account tramite il servizio di autenticazione Erlang
+    public void registerUser(
             String remoteNode,
             String gatewayName,
+            String username,
+            String password,
             long timeoutMillis
     ) throws IOException, ErlangServiceException {
-        OtpErlangObject result = sendRequest(
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("register_user"),
+                    new OtpErlangString(username),
+                    new OtpErlangString(password)
+                }
+        );
+        OtpErlangObject content = requireOk(sendRequest(
                 remoteNode,
                 gatewayName,
-                new OtpErlangAtom("list_quizzes"),
+                request,
                 timeoutMillis
-        );
+        ));
 
+        if (!new OtpErlangAtom("registered").equals(content)) {
+            throw new IOException("Unexpected registration result from Erlang");
+        }
+    }
+
+    // Verifica le credenziali e restituisce lo username riconosciuto da Erlang
+    public String authenticateUser(
+            String remoteNode,
+            String gatewayName,
+            String username,
+            String password,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("authenticate_user"),
+                    new OtpErlangString(username),
+                    new OtpErlangString(password)
+                }
+        );
+        OtpErlangObject content = requireOk(sendRequest(
+                remoteNode,
+                gatewayName,
+                request,
+                timeoutMillis
+        ));
+
+        return decodeString(content, "username");
+    }
+
+    public List<QuizSummary> listOwnedQuizzes(
+            String remoteNode,
+            String gatewayName,
+            String owner,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("list_owned_quizzes"),
+                    new OtpErlangString(owner)
+                }
+        );
+        OtpErlangObject content = requireOk(sendRequest(
+                remoteNode, gatewayName, request, timeoutMillis));
+        if (!(content instanceof OtpErlangList quizList)) {
+            throw new IOException("Expected a list of owned quizzes");
+        }
+
+        List<QuizSummary> quizzes = new ArrayList<>(quizList.arity());
+        for (OtpErlangObject quizTerm : quizList) {
+            quizzes.add(decodeQuizSummary(quizTerm));
+        }
+        return List.copyOf(quizzes);
+    }
+
+    public QuizDetails getOwnedQuiz(
+            String remoteNode,
+            String gatewayName,
+            String owner,
+            QuizId quizId,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("get_owned_quiz"),
+                    new OtpErlangString(owner),
+                    encodeQuizId(quizId)
+                }
+        );
+        return decodeQuizDetails(requireOk(sendRequest(
+                remoteNode, gatewayName, request, timeoutMillis)));
+    }
+
+    public QuizId createQuiz(
+            String remoteNode,
+            String gatewayName,
+            String owner,
+            QuizDraft quiz,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("create_quiz"),
+                    new OtpErlangString(owner),
+                    encodeQuizDraft(quiz)
+                }
+        );
+        return decodeQuizId(requireOk(sendRequest(
+                remoteNode, gatewayName, request, timeoutMillis)));
+    }
+
+    public void updateQuiz(
+            String remoteNode,
+            String gatewayName,
+            String owner,
+            QuizId quizId,
+            QuizDraft quiz,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("update_quiz"),
+                    new OtpErlangString(owner),
+                    encodeQuizId(quizId),
+                    encodeQuizDraft(quiz)
+                }
+        );
+        requireOkAtom(sendRequest(
+                remoteNode, gatewayName, request, timeoutMillis));
+    }
+
+    public void deleteQuiz(
+            String remoteNode,
+            String gatewayName,
+            String owner,
+            QuizId quizId,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("delete_quiz"),
+                    new OtpErlangString(owner),
+                    encodeQuizId(quizId)
+                }
+        );
+        requireOkAtom(sendRequest(
+                remoteNode, gatewayName, request, timeoutMillis));
+    }
+
+    private static OtpErlangObject requireOk(
+            OtpErlangObject result
+    ) throws IOException, ErlangServiceException {
         if (!(result instanceof OtpErlangTuple resultTuple)
                 || resultTuple.arity() != 2) {
             throw new IOException("Malformed result from Erlang gateway");
@@ -114,21 +259,28 @@ public final class ErlangClient implements AutoCloseable {
         OtpErlangObject content = resultTuple.elementAt(1);
 
         if (new OtpErlangAtom("error").equals(status)) {
-            throw new ErlangServiceException(content.toString());
+            throw new ErlangServiceException(decodeReason(content));
         }
         if (!new OtpErlangAtom("ok").equals(status)) {
             throw new IOException("Unknown result status from Erlang gateway");
         }
-        if (!(content instanceof OtpErlangList quizList)) {
-            throw new IOException("Expected a list of quizzes from Erlang");
-        }
 
-        List<QuizSummary> quizzes = new ArrayList<>(quizList.arity());
-        for (OtpErlangObject quizTerm : quizList) {
-            quizzes.add(decodeQuizSummary(quizTerm));
-        }
+        return content;
+    }
 
-        return List.copyOf(quizzes);
+    private static void requireOkAtom(OtpErlangObject result)
+            throws IOException, ErlangServiceException {
+        OtpErlangObject content = requireOk(result);
+        if (!new OtpErlangAtom("ok").equals(content)) {
+            throw new IOException("Expected ok from Erlang gateway");
+        }
+    }
+
+    private static String decodeReason(OtpErlangObject reason) {
+        if (reason instanceof OtpErlangAtom reasonAtom) {
+            return reasonAtom.atomValue();
+        }
+        return reason.toString();
     }
 
     // Invia una richiesta al gateway e restituisce il Result di {Ref, Result}
@@ -212,6 +364,103 @@ public final class ErlangClient implements AutoCloseable {
         );
     }
 
+    private static QuizDetails decodeQuizDetails(
+            OtpErlangObject quizTerm
+    ) throws IOException {
+        if (!(quizTerm instanceof OtpErlangMap quizMap)) {
+            throw new IOException("Expected an Erlang map for quiz details");
+        }
+        OtpErlangObject questionTerm = requiredMapValue(
+                quizMap, "questions");
+        if (!(questionTerm instanceof OtpErlangList questionList)) {
+            throw new IOException("Expected a list of quiz questions");
+        }
+
+        List<QuizQuestion> questions = new ArrayList<>(questionList.arity());
+        for (OtpErlangObject item : questionList) {
+            questions.add(decodeQuizQuestion(item));
+        }
+        return new QuizDetails(
+                decodeQuizId(requiredMapValue(quizMap, "id")),
+                decodeString(requiredMapValue(quizMap, "owner"), "owner"),
+                decodeString(requiredMapValue(quizMap, "title"), "title"),
+                decodeString(requiredMapValue(
+                        quizMap, "description"), "description"),
+                questions
+        );
+    }
+
+    private static QuizQuestion decodeQuizQuestion(
+            OtpErlangObject questionTerm
+    ) throws IOException {
+        if (!(questionTerm instanceof OtpErlangMap questionMap)) {
+            throw new IOException("Expected an Erlang map for a question");
+        }
+        OtpErlangObject answerTerm = requiredMapValue(
+                questionMap, "answers");
+        if (!(answerTerm instanceof OtpErlangList answerList)) {
+            throw new IOException("Expected a list of answers");
+        }
+        List<String> answers = new ArrayList<>(answerList.arity());
+        for (OtpErlangObject answer : answerList) {
+            answers.add(decodeString(answer, "answer"));
+        }
+        return new QuizQuestion(
+                decodeString(requiredMapValue(
+                        questionMap, "text"), "question text"),
+                answers,
+                decodeString(requiredMapValue(
+                        questionMap, "correct"), "correct answer"),
+                decodeLong(requiredMapValue(
+                        questionMap, "time_limit"), "time limit")
+        );
+    }
+
+    private static OtpErlangTuple encodeQuizId(QuizId quizId) {
+        return new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangLong(quizId.timestampMicros()),
+            new OtpErlangLong(quizId.uniqueInteger())
+        });
+    }
+
+    private static OtpErlangMap encodeQuizDraft(QuizDraft quiz) {
+        OtpErlangObject[] questions = quiz.questions().stream()
+                .map(ErlangClient::encodeQuizQuestion)
+                .toArray(OtpErlangObject[]::new);
+        return new OtpErlangMap(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("title"),
+                    new OtpErlangAtom("description"),
+                    new OtpErlangAtom("questions")
+                },
+                new OtpErlangObject[] {
+                    new OtpErlangString(quiz.title()),
+                    new OtpErlangString(quiz.description()),
+                    new OtpErlangList(questions)
+                }
+        );
+    }
+
+    private static OtpErlangMap encodeQuizQuestion(QuizQuestion question) {
+        OtpErlangObject[] answers = question.answers().stream()
+                .map(OtpErlangString::new)
+                .toArray(OtpErlangObject[]::new);
+        return new OtpErlangMap(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("text"),
+                    new OtpErlangAtom("answers"),
+                    new OtpErlangAtom("correct"),
+                    new OtpErlangAtom("time_limit")
+                },
+                new OtpErlangObject[] {
+                    new OtpErlangString(question.text()),
+                    new OtpErlangList(answers),
+                    new OtpErlangString(question.correct()),
+                    new OtpErlangLong(question.timeLimitMillis())
+                }
+        );
+    }
+
     private static OtpErlangObject requiredMapValue(
             OtpErlangMap map,
             String key
@@ -242,7 +491,7 @@ public final class ErlangClient implements AutoCloseable {
             OtpErlangObject stringTerm,
             String fieldName
     ) throws IOException {
-        if (stringTerm instanceof com.ericsson.otp.erlang.OtpErlangString value) {
+        if (stringTerm instanceof OtpErlangString value) {
             return value.stringValue();
         }
         if (stringTerm instanceof OtpErlangList value) {
@@ -250,13 +499,23 @@ public final class ErlangClient implements AutoCloseable {
                 return value.stringValue();
             } catch (OtpErlangException exception) {
                 throw new IOException(
-                        "Quiz field is not a string: " + fieldName,
+                        "Erlang field is not a string: " + fieldName,
                         exception
                 );
             }
         }
 
-        throw new IOException("Quiz field is not a string: " + fieldName);
+        throw new IOException("Erlang field is not a string: " + fieldName);
+    }
+
+    private static long decodeLong(
+            OtpErlangObject term,
+            String fieldName
+    ) throws IOException {
+        if (term instanceof OtpErlangLong value) {
+            return value.longValue();
+        }
+        throw new IOException("Erlang field is not an integer: " + fieldName);
     }
 
     // Chiude il nodo JInterface e libera le risorse associate

@@ -1,6 +1,9 @@
 package it.unipi.dsmt.quizarena.web;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -17,16 +20,23 @@ import it.unipi.dsmt.quizarena.erlang.ErlangGameSession;
 import it.unipi.dsmt.quizarena.erlang.ErlangServiceException;
 import it.unipi.dsmt.quizarena.erlang.ErlangTermConverter;
 import it.unipi.dsmt.quizarena.model.QuizId;
+import it.unipi.dsmt.quizarena.model.QuizSummary;
 import jakarta.websocket.CloseReason;
 import jakarta.websocket.Endpoint;
 import jakarta.websocket.EndpointConfig;
+import jakarta.websocket.HandshakeResponse;
 import jakarta.websocket.Session;
+import jakarta.websocket.server.HandshakeRequest;
 import jakarta.websocket.server.ServerEndpointConfig;
+import jakarta.servlet.http.HttpSession;
 
 public final class GameWebSocketEndpoint extends Endpoint {
 
     private static final long ERLANG_TIMEOUT_MILLIS = 5000;
-    private static final int MAX_HOST_NAME_LENGTH = 50;
+    private static final String AUTHENTICATED_USERNAME_PROPERTY =
+            GameWebSocketEndpoint.class.getName() + ".authenticatedUsername";
+    private static final String HTTP_SESSION_PROPERTY =
+            GameWebSocketEndpoint.class.getName() + ".httpSession";
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Logger LOGGER = Logger.getLogger(
             GameWebSocketEndpoint.class.getName()
@@ -37,13 +47,17 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private final String gatewayName;
     private final Object sendLock = new Object();
     private final Object erlangSessionLock = new Object();
+    private final Object stateReplayLock = new Object();
     private final AtomicBoolean closing = new AtomicBoolean();
+    private final List<Object> queuedEvents = new ArrayList<>();
 
     private Session webSocketSession;
     private ErlangGameSession erlangSession;
     private volatile String roomPin;
-    private volatile Long playerId;
     private volatile String role;
+    private String authenticatedUsername;
+    private HttpSession httpSession;
+    private boolean stateReplayInProgress;
 
     private GameWebSocketEndpoint(
             ErlangClient client,
@@ -73,6 +87,27 @@ public final class GameWebSocketEndpoint extends Endpoint {
     @Override
     public void onOpen(Session session, EndpointConfig config) {
         webSocketSession = session;
+        Object handshakeSession = config.getUserProperties().get(
+                HTTP_SESSION_PROPERTY);
+        Object username = config.getUserProperties().get(
+                AUTHENTICATED_USERNAME_PROPERTY);
+        if (!(handshakeSession instanceof HttpSession valueSession)
+                || !(username instanceof String value)
+                || value.isBlank()
+                || !value.equals(AuthenticationSession.username(
+                        valueSession))) {
+            closeUnauthenticated(session);
+            return;
+        }
+        httpSession = valueSession;
+        authenticatedUsername = value;
+
+        if (!AuthenticationSession.registerWebSocket(
+                httpSession, session)) {
+            closeUnauthenticated(session);
+            return;
+        }
+
         ErlangGameSession openedSession = client.openGameSession(
                 backendNode,
                 gatewayName,
@@ -106,6 +141,19 @@ public final class GameWebSocketEndpoint extends Endpoint {
         sendJson(Map.of("type", "connected"));
     }
 
+    private void closeUnauthenticated(Session session) {
+        closing.set(true);
+        try {
+            session.close(new CloseReason(
+                    CloseReason.CloseCodes.VIOLATED_POLICY,
+                    "Authentication required"
+            ));
+        } catch (IOException exception) {
+            LOGGER.log(Level.FINE,
+                    "Unable to close unauthenticated WebSocket", exception);
+        }
+    }
+
     private void handleMessage(String text) {
         try {
             JsonNode message = JSON.readTree(text);
@@ -124,14 +172,15 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 case "next_round" -> handleNextRound();
                 case "answer" -> handleAnswer(message);
                 case "end_game" -> handleEndGame();
-                case "list_quizzes" -> handleListQuizzes();
+                case "list_owned_quizzes" -> handleListOwnedQuizzes();
                 default -> sendError("unsupported_action",
                         "Unsupported action: " + action);
             }
         } catch (JsonProcessingException | IllegalArgumentException exception) {
             sendError("invalid_message", exception.getMessage());
         } catch (ErlangServiceException exception) {
-            sendError("service_error", exception.getMessage());
+            sendError(exception.getReason(),
+                    serviceErrorMessage(exception));
         } catch (IOException exception) {
             sendError("backend_unavailable", "Backend unavailable");
         }
@@ -153,26 +202,29 @@ public final class GameWebSocketEndpoint extends Endpoint {
         QuizId quizId = new QuizId(
                 requiredLong(quizIdNode, "timestampMicros"),
                 requiredLong(quizIdNode, "uniqueInteger"));
-        String hostName = requiredText(message, "hostName").trim();
-        if (hostName.length() > MAX_HOST_NAME_LENGTH) {
-            throw new IllegalArgumentException("Host name is too long");
-        }
-
         String pin = currentErlangSession().createRoom(
-                quizId, hostName, ERLANG_TIMEOUT_MILLIS);
+                quizId, authenticatedUsername, ERLANG_TIMEOUT_MILLIS);
         roomPin = pin;
         role = "host";
         sendJson(Map.of("type", "room_created", "pin", pin));
     }
 
-    private void handleCancelRoom() throws IOException {
+    private void handleCancelRoom()
+            throws IOException, ErlangServiceException {
         if (roomPin == null) {
             sendError("room_not_created", "No room to cancel");
             return;
         }
-        currentErlangSession().cancelRoom(roomPin);
+        if (!"host".equals(role)) {
+            sendError("not_host",
+                    "Solo l'host puo' annullare la stanza");
+            return;
+        }
+        currentErlangSession().cancelRoom(
+                roomPin, ERLANG_TIMEOUT_MILLIS);
         String cancelledPin = roomPin;
         roomPin = null;
+        role = null;
         sendJson(Map.of("type", "cancelled", "pin", cancelledPin));
     }
 
@@ -180,51 +232,78 @@ public final class GameWebSocketEndpoint extends Endpoint {
         var rooms = currentErlangSession().listRooms(ERLANG_TIMEOUT_MILLIS);
         sendJson(Map.of("type", "rooms", "rooms", rooms));
     }
-        private void handleListQuizzes()
+    private void handleListOwnedQuizzes()
             throws IOException, ErlangServiceException {
-        java.util.List<it.unipi.dsmt.quizarena.model.QuizSummary> quizzes =
-                client.listQuizzes(backendNode, gatewayName, ERLANG_TIMEOUT_MILLIS);
-        java.util.List<java.util.Map<String, Object>> out = new java.util.ArrayList<>();
-        for (it.unipi.dsmt.quizarena.model.QuizSummary q : quizzes) {
-            java.util.Map<String, Object> idMap = new java.util.HashMap<>();
+        List<QuizSummary> quizzes = client.listOwnedQuizzes(
+                backendNode,
+                gatewayName,
+                authenticatedUsername,
+                ERLANG_TIMEOUT_MILLIS);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (QuizSummary q : quizzes) {
+            Map<String, Object> idMap = new HashMap<>();
             idMap.put("timestampMicros", q.id().timestampMicros());
             idMap.put("uniqueInteger", q.id().uniqueInteger());
-            java.util.Map<String, Object> item = new java.util.HashMap<>();
+            Map<String, Object> item = new HashMap<>();
             item.put("id", idMap);
             item.put("owner", q.owner());
             item.put("title", q.title());
             item.put("description", q.description());
             out.add(item);
         }
-        sendJson(java.util.Map.of("type", "quizzes", "quizzes", out));
+        sendJson(Map.of("type", "quizzes", "quizzes", out));
     }
 
     private void handleJoin(JsonNode message)
             throws IOException, ErlangServiceException {
-        String pin = requiredText(message, "pin");
-        String nickname = requiredText(message, "nickname").trim();
-        if (nickname.length() > MAX_HOST_NAME_LENGTH) {
-            throw new IllegalArgumentException("Nickname too long");
+        if (roomPin != null) {
+            sendError("connection_already_associated",
+                    "This connection is already associated with a room");
+            return;
         }
-        long pid = currentErlangSession().join(
-                pin, nickname, ERLANG_TIMEOUT_MILLIS);
-        this.playerId = pid;
+        String pin = requiredText(message, "pin");
+        currentErlangSession().join(
+                pin,
+                authenticatedUsername,
+                ERLANG_TIMEOUT_MILLIS
+        );
         this.roomPin = pin;
         this.role = "player";
         sendJson(Map.of("type", "joined",
-                "playerId", pid, "pin", pin));
+                "username", authenticatedUsername, "pin", pin));
     }
 
     private void handleRejoin(JsonNode message)
             throws IOException, ErlangServiceException {
+        if (roomPin != null) {
+            sendError("connection_already_associated",
+                    "This connection is already associated with a room");
+            return;
+        }
         String pin = requiredText(message, "pin");
-        long pid = requiredLong(message, "playerId");
-        currentErlangSession().rejoin(pin, pid, ERLANG_TIMEOUT_MILLIS);
-        this.playerId = pid;
-        this.roomPin = pin;
-        this.role = "player";
-        sendJson(Map.of("type", "rejoined",
-                "playerId", pid, "pin", pin));
+        beginStateReplay();
+        try {
+            ErlangGameSession session = currentErlangSession();
+            session.rejoin(
+                    pin, authenticatedUsername, ERLANG_TIMEOUT_MILLIS);
+            this.roomPin = pin;
+            this.role = "player";
+            Object playerState = session.getPlayerState(
+                    pin,
+                    authenticatedUsername,
+                    ERLANG_TIMEOUT_MILLIS
+            );
+            sendJson(Map.of(
+                    "type", "rejoined",
+                    "pin", pin,
+                    "state", playerState
+            ));
+            finishStateReplay(sequenceOf(playerState));
+        } catch (IOException | ErlangServiceException exception) {
+            releaseRoomAssociation();
+            abortStateReplay();
+            throw exception;
+        }
     }
 
     private void handleStartGame()
@@ -251,16 +330,15 @@ public final class GameWebSocketEndpoint extends Endpoint {
 
     private void handleAnswer(JsonNode message)
             throws IOException, ErlangServiceException {
-        if (roomPin == null) {
+        if (roomPin == null || !"player".equals(role)) {
             sendError("room_not_created",
                     "Join a room before answering");
             return;
         }
-        long pid = requiredLong(message, "playerId");
         long round = requiredLong(message, "round");
         String answer = requiredText(message, "answer");
         currentErlangSession().answer(
-                roomPin, pid, round, answer, ERLANG_TIMEOUT_MILLIS);
+                roomPin, round, answer, ERLANG_TIMEOUT_MILLIS);
         sendJson(Map.of("type", "ok", "action", "answer"));
     }
 
@@ -278,13 +356,55 @@ public final class GameWebSocketEndpoint extends Endpoint {
 
     private void sendEvent(OtpErlangObject event) {
         try {
-            sendJson(Map.of(
-                    "type", "event",
-                    "event", ErlangTermConverter.toJavaValue(event)
-            ));
+            Object converted = ErlangTermConverter.toJavaValue(event);
+            synchronized (stateReplayLock) {
+                if (stateReplayInProgress) {
+                    queuedEvents.add(converted);
+                } else {
+                    sendConvertedEvent(converted);
+                }
+            }
         } catch (IOException exception) {
             closeForBackendFailure();
         }
+    }
+
+    private void beginStateReplay() {
+        synchronized (stateReplayLock) {
+            stateReplayInProgress = true;
+            queuedEvents.clear();
+        }
+    }
+
+    private void finishStateReplay(long snapshotSequence) {
+        synchronized (stateReplayLock) {
+            for (Object event : queuedEvents) {
+                if (sequenceOf(event) > snapshotSequence) {
+                    sendConvertedEvent(event);
+                }
+            }
+            queuedEvents.clear();
+            stateReplayInProgress = false;
+        }
+    }
+
+    private void abortStateReplay() {
+        synchronized (stateReplayLock) {
+            queuedEvents.clear();
+            stateReplayInProgress = false;
+        }
+    }
+
+    private void sendConvertedEvent(Object event) {
+        sendJson(Map.of("type", "event", "event", event));
+    }
+
+    private static long sequenceOf(Object value) {
+        if (value instanceof Map<?, ?> map
+                && map.get("seq") instanceof Number sequence) {
+            return sequence.longValue();
+        }
+        return -1;
     }
 
     private void sendError(String code, String message) {
@@ -293,6 +413,18 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 "code", code,
                 "message", message
         ));
+    }
+
+    private static String serviceErrorMessage(
+            ErlangServiceException exception
+    ) {
+        return switch (exception.getReason()) {
+            case "not_owner" ->
+                    "Il quiz non appartiene all'utente autenticato";
+            case "not_host" ->
+                    "Solo l'host puo' eseguire questa operazione";
+            default -> exception.getMessage();
+        };
     }
 
     private void sendJson(Object message) {
@@ -314,7 +446,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
             return;
         }
 
-        cancelOwnedRoom();
+        releaseRoomAssociation();
         closeErlangSession();
         if (webSocketSession != null && webSocketSession.isOpen()) {
             try {
@@ -331,7 +463,8 @@ public final class GameWebSocketEndpoint extends Endpoint {
     @Override
     public void onClose(Session session, CloseReason closeReason) {
         closing.set(true);
-        cancelOwnedRoom();
+        AuthenticationSession.unregisterWebSocket(httpSession, session);
+        releaseRoomAssociation();
         closeErlangSession();
     }
 
@@ -352,15 +485,20 @@ public final class GameWebSocketEndpoint extends Endpoint {
         }
     }
 
-    private void cancelOwnedRoom() {
+    private void releaseRoomAssociation() {
         synchronized (erlangSessionLock) {
             if (roomPin == null) {
                 return;
             }
             if (erlangSession != null) {
-                erlangSession.cancelRoom(roomPin);
+                if ("host".equals(role)) {
+                    erlangSession.cancelRoom(roomPin);
+                } else if ("player".equals(role)) {
+                    erlangSession.disconnectPlayer(roomPin);
+                }
             }
             roomPin = null;
+            role = null;
         }
     }
 
@@ -427,6 +565,30 @@ public final class GameWebSocketEndpoint extends Endpoint {
                     backendNode,
                     gatewayName
             ));
+        }
+
+        @Override
+        public void modifyHandshake(
+                ServerEndpointConfig endpointConfig,
+                HandshakeRequest request,
+                HandshakeResponse response
+        ) {
+            Object session = request.getHttpSession();
+            String username = session instanceof HttpSession httpSession
+                    ? AuthenticationSession.username(httpSession)
+                    : null;
+
+            if (username == null) {
+                endpointConfig.getUserProperties().remove(
+                        AUTHENTICATED_USERNAME_PROPERTY);
+                endpointConfig.getUserProperties().remove(
+                        HTTP_SESSION_PROPERTY);
+            } else {
+                endpointConfig.getUserProperties().put(
+                        AUTHENTICATED_USERNAME_PROPERTY, username);
+                endpointConfig.getUserProperties().put(
+                        HTTP_SESSION_PROPERTY, session);
+            }
         }
     }
 }
