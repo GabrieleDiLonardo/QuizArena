@@ -3,19 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <title>QuizArena</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/common.css">
+    <link rel="stylesheet" href="css/index.css">
 </head>
 <body>
     <div class="container">
+        <header class="page-topbar">
+            <span class="user-badge" data-user-badge>
+                👤 <span class="user-name" data-current-user>…</span>
+            </span>
+        </header>
+
         <h1>QuizArena</h1>
         <p>Piattaforma distribuita di quiz in tempo reale.</p>
+
         <div class="menu">
             <a href="login" class="btn">Accedi</a>
             <a href="register" class="btn">Registrati</a>
             <a href="lobby.html" class="btn">Lobby (partite aperte)</a>
             <a href="host.html" class="btn">Crea una partita (Host)</a>
             <a href="play.html" class="btn">Gioca (Player)</a>
+            <a href="authoring.html" class="btn">I miei quiz</a>
         </div>
     </div>
+    <script src="js/user-info.js"></script>
 </body>
 </html>

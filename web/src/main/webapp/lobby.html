@@ -3,22 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <title>Lobby - QuizArena</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/common.css">
+    <link rel="stylesheet" href="css/lobby.css">
 </head>
 <body>
     <div class="container">
+        <header class="page-topbar">
+            <a href="index.html" class="btn-back">← Home</a>
+            <span class="user-badge" data-user-badge>
+                👤 <span class="user-name" data-current-user>…</span>
+            </span>
+        </header>
+
         <h1>Lobby</h1>
         <p>Stanze aperte in questo momento:</p>
         <button id="refreshBtn">Aggiorna</button>
         <div id="roomsList">Caricamento...</div>
-        <p style="margin-top:20px;">
-            <a href="index.html">Torna alla home</a>
-        </p>
-        <form method="post" action="logout">
+        <form method="post" action="logout" style="margin-top:20px;">
             <button type="submit">Esci</button>
         </form>
         <div id="log" class="log"></div>
     </div>
+    <script src="js/user-info.js"></script>
     <script src="js/ws-client.js"></script>
     <script src="js/lobby.js"></script>
 </body>

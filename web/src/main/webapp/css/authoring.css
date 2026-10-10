@@ -1,0 +1,223 @@
+/* ===== Header pagina ===== */
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.page-nav {
+    display: flex;
+    gap: 12px;
+}
+
+.page-nav a {
+    color: #4b3f99;
+    text-decoration: none;
+    font-weight: 500;
+}
+.page-nav a:hover { text-decoration: underline; }
+
+.intro {
+    color: #555;
+    margin-bottom: 20px;
+}
+
+.actions-bar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+
+/* ===== Editor quiz ===== */
+.question-editor {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 16px;
+    margin: 16px 0;
+    background: #fafafa;
+}
+
+.question-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    gap: 10px;
+}
+
+.question-header .remove-question {
+    padding: 8px 14px;
+    margin: 0;
+    font-size: 13px;
+}
+
+.hint {
+    font-weight: 400;
+    font-size: 13px;
+    color: #666;
+    font-style: italic;
+}
+
+/* ===== Righe risposte ===== */
+.answers-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 10px 0;
+}
+
+.answer-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px;
+    border-radius: 8px;
+    border: 2px solid transparent;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.answer-row:hover { background: #f8f6ff; }
+
+.answer-row.is-correct {
+    background: #e6f7e6;
+    border-color: #4caf50;
+}
+
+.answer-row .answer-input {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 15px;
+    font-family: inherit;
+}
+
+.answer-row .answer-input:focus {
+    outline: none;
+    border-color: #4b3f99;
+    box-shadow: 0 0 0 3px rgba(75, 63, 153, .15);
+}
+
+/* Cerchio toggle per risposta corretta */
+.correct-toggle {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    padding: 0;
+    margin: 0;
+    border-radius: 50%;
+    background: white;
+    border: 2px solid #bbb;
+    color: transparent;
+    font-size: 22px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.correct-toggle:hover {
+    border-color: #4b3f99;
+    background: #f0edff;
+}
+
+.answer-row.is-correct .correct-toggle {
+    background: #4caf50;
+    border-color: #4caf50;
+    color: white;
+}
+
+.correct-check { line-height: 1; }
+
+/* Bottone rimuovi risposta */
+.remove-answer {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    padding: 0;
+    margin: 0;
+    background: #ffe5e5;
+    color: #a00;
+    border: 1px solid #f5c2c2;
+    border-radius: 8px;
+    font-size: 22px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.remove-answer:hover {
+    background: #d33;
+    color: white;
+    border-color: #d33;
+}
+
+/* Responsive */
+@media (max-width: 500px) {
+    .answer-row { flex-wrap: wrap; }
+    .answer-row .answer-input {
+        flex-basis: calc(100% - 100px);
+        order: 2;
+    }
+    .correct-toggle { order: 1; }
+    .remove-answer { order: 3; }
+}
+
+/* ===== Form actions ===== */
+.form-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #ddd;
+    flex-wrap: wrap;
+}
+/* ===== Quiz card header (titolo + badge) ===== */
+.quiz-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.quiz-card-header h3 {
+    margin: 0;
+    flex: 1;
+}
+
+/* ===== Badge visibilità ===== */
+.badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.badge-public {
+    background: #e6f7e6;
+    color: #2a7a2a;
+    border: 1px solid #b8e6b8;
+}
+
+.badge-private {
+    background: #fff4e0;
+    color: #b06a00;
+    border: 1px solid #f0d59a;
+}

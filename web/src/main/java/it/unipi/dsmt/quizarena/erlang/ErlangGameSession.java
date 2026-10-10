@@ -75,31 +75,43 @@ public class ErlangGameSession implements AutoCloseable {
     // ---------- API pubblica ----------
 
     public String createRoom(
+        QuizId quizId,
+        String hostUsername,
+        long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        return createRoom(quizId, hostUsername, "public", timeoutMillis);
+    }
+
+    public String createRoom(
             QuizId quizId,
             String hostUsername,
+            String visibility,
             long timeoutMillis
     ) throws IOException, ErlangServiceException {
         Objects.requireNonNull(quizId, "quizId must not be null");
         requireText(hostUsername, "hostUsername");
+        if (!"public".equals(visibility) && !"private".equals(visibility)) {
+            throw new IllegalArgumentException("visibility must be public or private");
+        }
 
-        OtpErlangTuple erlangQuizId = new OtpErlangTuple(
-                new OtpErlangObject[] {
-                    new OtpErlangLong(quizId.timestampMicros()),
-                    new OtpErlangLong(quizId.uniqueInteger())
-                }
-        );
-        OtpErlangTuple request = new OtpErlangTuple(
-                new OtpErlangObject[] {
-                    new OtpErlangAtom("create_room"),
-                    erlangQuizId,
-                    new OtpErlangString(hostUsername)
-                }
-        );
+    OtpErlangTuple erlangQuizId = new OtpErlangTuple(
+            new OtpErlangObject[] {
+                new OtpErlangLong(quizId.timestampMicros()),
+                new OtpErlangLong(quizId.uniqueInteger())
+            }
+    );
+    OtpErlangTuple request = new OtpErlangTuple(
+            new OtpErlangObject[] {
+                new OtpErlangAtom("create_room"),
+                erlangQuizId,
+                new OtpErlangString(hostUsername),
+                new OtpErlangAtom(visibility)
+            }
+    );
 
-        OtpErlangObject result = sendRequest(request, timeoutMillis);
-        return decodeStringResult(result, "room PIN");
-    }
-
+    OtpErlangObject result = sendRequest(request, timeoutMillis);
+    return decodeStringResult(result, "room PIN");
+}
     public void cancelRoom(String pin) {
         requireText(pin, "pin");
         if (!open.get()) {

@@ -7,6 +7,7 @@ public record QuizDetails(
         String owner,
         String title,
         String description,
+        String visibility,
         List<QuizQuestion> questions
 ) {
     public QuizDetails {

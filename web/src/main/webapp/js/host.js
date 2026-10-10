@@ -1,3 +1,5 @@
+'use strict';
+
 // ===== Log helper =====
 const log = (msg) => {
     const el = document.getElementById('log');
@@ -10,35 +12,58 @@ const log = (msg) => {
 const ws = new QuizWsClient(handleMessage);
 ws.connect();
 
-// ===== Stato locale =====
+// ===== Stato =====
 let currentPin = null;
 let players = [];
+let roomVisibility = 'public';
 
-// ===== Handlers pulsanti =====
+// ===== Toggle visibilità stanza =====
+const visibilityToggle = document.getElementById('visibilityToggle');
+const visibilityHint = document.getElementById('visibilityHint');
+
+function setVisibility(value) {
+    roomVisibility = value;
+    visibilityToggle.dataset.visibility = value;
+    visibilityToggle.textContent = value === 'public' ? 'Pubblica' : 'Privata';
+    visibilityToggle.classList.toggle('is-private', value === 'private');
+    visibilityToggle.classList.toggle('is-public', value === 'public');
+    visibilityHint.textContent = value === 'public'
+        ? 'Visibile nella lobby'
+        : 'Non visibile nella lobby';
+}
+visibilityToggle.onclick = () => {
+    setVisibility(roomVisibility === 'public' ? 'private' : 'public');
+};
+setVisibility('public');
+
+// ===== Handlers =====
 document.getElementById('startBtn').onclick = () => {
     ws.send({action: 'start_game'});
 };
-
 document.getElementById('nextBtn').onclick = () => {
     ws.send({action: 'next_round'});
 };
-
 document.getElementById('endBtn').onclick = () => {
     if (confirm('Terminare la partita?')) {
         ws.send({action: 'end_game'});
     }
 };
 
-// ===== Gestione messaggi dal server =====
+// ===== Messaggi dal server =====
 function handleMessage(msg) {
     log('← ' + JSON.stringify(msg));
 
     if (msg.type === 'connected') {
-        loadQuizzes();
+        loadMyQuizzes();
+        loadBrowsableQuizzes();
         return;
     }
     if (msg.type === 'quizzes') {
-        renderQuizzes(msg.quizzes);
+        renderMyQuizzes(msg.quizzes);
+        return;
+    }
+    if (msg.type === 'browsable_quizzes') {
+        renderPublicQuizzes(msg.quizzes);
         return;
     }
     if (msg.type === 'room_created') {
@@ -46,6 +71,10 @@ function handleMessage(msg) {
         document.getElementById('step1').style.display = 'none';
         document.getElementById('step2').style.display = 'block';
         document.getElementById('pinDisplay').textContent = msg.pin;
+        document.getElementById('visibilityInfo').textContent =
+            msg.visibility === 'private'
+                ? '⚠ Stanza privata — non visibile in lobby'
+                : '✓ Stanza pubblica — visibile in lobby';
         return;
     }
     if (msg.type === 'error') {
@@ -60,28 +89,61 @@ function handleMessage(msg) {
     }
 }
 
-// ===== Caricamento e render della lista quiz =====
-function loadQuizzes() {
-    document.getElementById('quizList').innerHTML = 'Caricamento...';
+// ===== Caricamento liste quiz =====
+function loadMyQuizzes() {
+    document.getElementById('myQuizList').innerHTML = 'Caricamento...';
     ws.send({action: 'list_owned_quizzes'});
 }
+function loadBrowsableQuizzes() {
+    document.getElementById('publicQuizList').innerHTML = 'Caricamento...';
+    ws.send({action: 'list_browsable_quizzes'});
+}
 
-function renderQuizzes(quizzes) {
-    const el = document.getElementById('quizList');
+function renderMyQuizzes(quizzes) {
+    const el = document.getElementById('myQuizList');
     if (!quizzes || quizzes.length === 0) {
-        el.innerHTML = '<p>Nessun quiz disponibile. Contatta un amministratore.</p>';
+        el.innerHTML =
+            '<p>Nessun quiz. Creane uno dalla pagina <a href="authoring.html">I miei quiz</a>.</p>';
         return;
     }
-    el.innerHTML = quizzes.map((q, i) => `
-        <div class="quiz-card">
-            <h3>${escapeHtml(q.title)}</h3>
-            <p>${escapeHtml(q.description || '')}</p>
-            <p class="quiz-owner">di ${escapeHtml(q.owner || 'anonimo')}</p>
-            <button class="quiz-select-btn" data-index="${i}">Crea stanza</button>
-        </div>
-    `).join('');
+    el.innerHTML = quizzes.map((q, i) => renderQuizCard(q, i, 'my')).join('');
+    bindQuizButtons(el, quizzes);
+}
 
-    document.querySelectorAll('.quiz-select-btn').forEach(btn => {
+function renderPublicQuizzes(quizzes) {
+    const el = document.getElementById('publicQuizList');
+    // Filtra solo quelli NON miei
+    const others = (quizzes || []).filter(q => !q.isOwn);
+    if (others.length === 0) {
+        el.innerHTML = '<p>Nessun quiz pubblico di altri utenti.</p>';
+        return;
+    }
+    el.innerHTML = others.map((q, i) => renderQuizCard(q, i, 'public')).join('');
+    bindQuizButtons(el, others);
+}
+
+function renderQuizCard(q, index, kind) {
+    const badge = q.visibility === 'private'
+        ? '<span class="badge badge-private">🔒 Privato</span>'
+        : '<span class="badge badge-public">🌐 Pubblico</span>';
+    const ownerLine = kind === 'public'
+        ? `<p class="quiz-owner">di ${escapeHtml(q.owner)}</p>`
+        : '';
+    return `
+        <div class="quiz-card">
+            <div class="quiz-card-header">
+                <h3>${escapeHtml(q.title)}</h3>
+                ${badge}
+            </div>
+            <p>${escapeHtml(q.description || '')}</p>
+            ${ownerLine}
+            <button class="quiz-select-btn" data-index="${index}">Crea stanza</button>
+        </div>
+    `;
+}
+
+function bindQuizButtons(container, quizzes) {
+    container.querySelectorAll('.quiz-select-btn').forEach(btn => {
         btn.onclick = () => {
             const idx = parseInt(btn.getAttribute('data-index'), 10);
             createRoomWithQuiz(quizzes[idx]);
@@ -95,16 +157,15 @@ function createRoomWithQuiz(quiz) {
         quizId: {
             timestampMicros: quiz.id.timestampMicros,
             uniqueInteger: quiz.id.uniqueInteger
-        }
+        },
+        visibility: roomVisibility
     });
 }
 
-// ===== Gestione eventi di gioco =====
+// ===== Eventi di gioco =====
 function handleEvent(ev) {
     if (ev.type === 'player_joined' || ev.type === 'player_rejoined') {
-        if (!players.includes(ev.username)) {
-            players.push(ev.username);
-        }
+        if (!players.includes(ev.username)) players.push(ev.username);
         updatePlayerList();
     } else if (ev.type === 'player_disconnected') {
         players = players.filter(p => p !== ev.username);

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>I miei quiz - QuizArena</title>
+    <link rel="stylesheet" href="css/common.css">
+    <link rel="stylesheet" href="css/authoring.css">
+</head>
+<body>
+    <div class="container">
+        <header class="page-topbar">
+            <a href="index.html" class="btn-back">← Home</a>
+            <span class="user-badge" data-user-badge>
+                👤 <span class="user-name" data-current-user>…</span>
+            </span>
+        </header>
+
+        <h1>I miei quiz</h1>
+
+        <p class="intro">
+            Qui puoi creare, modificare ed eliminare i tuoi quiz.
+            Solo tu puoi vederli e modificarli.
+            Puoi renderli <strong>pubblici</strong> per farli usare agli altri host.
+        </p>
+
+        <div class="actions-bar">
+            <button id="newQuizBtn">+ Nuovo quiz</button>
+            <button id="refreshBtn" class="btn-secondary">Aggiorna</button>
+        </div>
+
+        <div id="alertBox" class="alert" hidden></div>
+
+        <section id="quizListSection">
+            <h2>Quiz esistenti</h2>
+            <div id="quizList">Caricamento...</div>
+        </section>
+
+        <section id="editorSection" hidden>
+            <h2 id="editorTitle">Nuovo quiz</h2>
+            <form id="quizForm">
+                <label for="titleInput">Titolo</label>
+                <input type="text" id="titleInput" maxlength="100" required>
+
+                <label for="descriptionInput">Descrizione</label>
+                <textarea id="descriptionInput" maxlength="1000"
+                          rows="3"></textarea>
+
+                <label>Visibilità del quiz</label>
+                <div class="visibility-picker">
+                    <button type="button" id="quizVisibilityToggle"
+                            data-visibility="public"
+                            class="visibility-button is-public">
+                        Pubblica
+                    </button>
+                    <span class="visibility-hint" id="quizVisibilityHint">
+                        Chiunque potrà usarlo per creare partite
+                    </span>
+                </div>
+
+                <h3>Domande</h3>
+                <div id="questionsContainer"></div>
+                <button type="button" id="addQuestionBtn"
+                        class="btn-secondary">+ Aggiungi domanda</button>
+
+                <div class="form-actions">
+                    <button type="submit" id="saveQuizBtn">Salva quiz</button>
+                    <button type="button" id="cancelEditBtn"
+                            class="btn-secondary">Annulla</button>
+                </div>
+            </form>
+        </section>
+    </div>
+
+    <script src="js/user-info.js"></script>
+    <script src="js/authoring.js"></script>
+</body>
+</html>

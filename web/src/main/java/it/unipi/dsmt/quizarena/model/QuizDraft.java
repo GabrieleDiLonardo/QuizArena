@@ -5,6 +5,7 @@ import java.util.List;
 public record QuizDraft(
         String title,
         String description,
+        String visibility,
         List<QuizQuestion> questions
 ) {
     public QuizDraft {

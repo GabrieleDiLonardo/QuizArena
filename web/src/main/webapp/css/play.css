@@ -1,0 +1,44 @@
+/* ===== Answer buttons ===== */
+.answer-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
+    margin: 8px 0;
+    padding: 14px 18px;
+    background: white;
+    color: #222;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all .15s;
+}
+
+.answer-btn:hover:not(:disabled) {
+    border-color: #4b3f99;
+    background: #f8f6ff;
+}
+
+.answer-btn.selected {
+    border-color: #4b3f99;
+    background: #e8e3ff;
+}
+
+.answer-btn:disabled {
+    cursor: not-allowed;
+    opacity: .6;
+}
+
+.answer-btn.selected:disabled {
+    opacity: 1;
+    background: #e8e3ff;
+}
+
+/* ===== Timer ===== */
+#timerDisplay {
+    font-size: 20px;
+    font-weight: bold;
+    color: #4b3f99;
+    margin: 10px 0;
+    font-family: monospace;
+}

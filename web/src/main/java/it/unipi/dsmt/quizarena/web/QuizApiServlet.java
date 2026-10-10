@@ -50,155 +50,114 @@ public final class QuizApiServlet extends HttpServlet {
     }
 
     @Override
-    protected void doGet(
-            HttpServletRequest request,
-            HttpServletResponse response
-    ) throws IOException {
+    protected void doGet(HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
         String owner = authenticatedUsername(request, response);
-        if (owner == null) {
-            return;
-        }
+        if (owner == null) return;
 
         try {
             QuizId quizId = optionalQuizId(request);
             if (quizId == null) {
                 writeJson(response, HttpServletResponse.SC_OK,
                         requireClient().listOwnedQuizzes(
-                                backendNode,
-                                gatewayName,
-                                owner,
-                                ERLANG_TIMEOUT_MILLIS
-                        ));
+                                backendNode, gatewayName, owner,
+                                ERLANG_TIMEOUT_MILLIS));
             } else {
                 writeJson(response, HttpServletResponse.SC_OK,
                         requireClient().getOwnedQuiz(
-                                backendNode,
-                                gatewayName,
-                                owner,
-                                quizId,
-                                ERLANG_TIMEOUT_MILLIS
-                        ));
+                                backendNode, gatewayName, owner, quizId,
+                                ERLANG_TIMEOUT_MILLIS));
             }
-        } catch (IllegalArgumentException exception) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST,
-                    exception.getMessage());
-        } catch (ErlangServiceException exception) {
-            handleServiceError(response, exception);
-        } catch (IOException exception) {
-            backendUnavailable(response, exception);
+        } catch (IllegalArgumentException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
+        } catch (ErlangServiceException e) {
+            handleServiceError(response, e);
+        } catch (IOException e) {
+            backendUnavailable(response, e);
         }
     }
 
     @Override
-    protected void doPost(
-            HttpServletRequest request,
-            HttpServletResponse response
-    ) throws IOException {
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
         String owner = authenticatedUsername(request, response);
-        if (owner == null) {
-            return;
-        }
+        if (owner == null) return;
 
         try {
             requireCollectionPath(request);
             QuizDraft quiz = readQuizDraft(request);
             QuizId quizId = requireClient().createQuiz(
-                    backendNode,
-                    gatewayName,
-                    owner,
-                    quiz,
-                    ERLANG_TIMEOUT_MILLIS
-            );
+                    backendNode, gatewayName, owner, quiz,
+                    ERLANG_TIMEOUT_MILLIS);
             writeJson(response, HttpServletResponse.SC_CREATED,
                     Map.of("id", quizId));
-        } catch (IllegalArgumentException exception) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST,
-                    exception.getMessage());
-        } catch (ErlangServiceException exception) {
-            handleServiceError(response, exception);
-        } catch (IOException exception) {
-            backendUnavailable(response, exception);
+        } catch (IllegalArgumentException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
+        } catch (ErlangServiceException e) {
+            handleServiceError(response, e);
+        } catch (IOException e) {
+            backendUnavailable(response, e);
         }
     }
 
     @Override
-    protected void doPut(
-            HttpServletRequest request,
-            HttpServletResponse response
-    ) throws IOException {
+    protected void doPut(HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
         String owner = authenticatedUsername(request, response);
-        if (owner == null) {
-            return;
-        }
+        if (owner == null) return;
 
         try {
             QuizId quizId = requiredQuizId(request);
             QuizDraft quiz = readQuizDraft(request);
             requireClient().updateQuiz(
-                    backendNode,
-                    gatewayName,
-                    owner,
-                    quizId,
-                    quiz,
-                    ERLANG_TIMEOUT_MILLIS
-            );
+                    backendNode, gatewayName, owner, quizId, quiz,
+                    ERLANG_TIMEOUT_MILLIS);
             writeJson(response, HttpServletResponse.SC_OK,
                     Map.of("status", "updated"));
-        } catch (IllegalArgumentException exception) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST,
-                    exception.getMessage());
-        } catch (ErlangServiceException exception) {
-            handleServiceError(response, exception);
-        } catch (IOException exception) {
-            backendUnavailable(response, exception);
+        } catch (IllegalArgumentException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
+        } catch (ErlangServiceException e) {
+            handleServiceError(response, e);
+        } catch (IOException e) {
+            backendUnavailable(response, e);
         }
     }
 
     @Override
-    protected void doDelete(
-            HttpServletRequest request,
-            HttpServletResponse response
-    ) throws IOException {
+    protected void doDelete(HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
         String owner = authenticatedUsername(request, response);
-        if (owner == null) {
-            return;
-        }
+        if (owner == null) return;
 
         try {
             QuizId quizId = requiredQuizId(request);
             requireClient().deleteQuiz(
-                    backendNode,
-                    gatewayName,
-                    owner,
-                    quizId,
-                    ERLANG_TIMEOUT_MILLIS
-            );
+                    backendNode, gatewayName, owner, quizId,
+                    ERLANG_TIMEOUT_MILLIS);
             writeJson(response, HttpServletResponse.SC_OK,
                     Map.of("status", "deleted"));
-        } catch (IllegalArgumentException exception) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST,
-                    exception.getMessage());
-        } catch (ErlangServiceException exception) {
-            handleServiceError(response, exception);
-        } catch (IOException exception) {
-            backendUnavailable(response, exception);
+        } catch (IllegalArgumentException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
+        } catch (ErlangServiceException e) {
+            handleServiceError(response, e);
+        } catch (IOException e) {
+            backendUnavailable(response, e);
         }
     }
+
+    // ---------- Parsing ----------
 
     private QuizDraft readQuizDraft(HttpServletRequest request) {
         final JsonNode root;
         try {
             root = JSON.readTree(request.getInputStream());
-        } catch (JsonProcessingException exception) {
+        } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("JSON non valido");
-        } catch (IOException exception) {
-            throw new IllegalArgumentException(
-                    "Impossibile leggere il JSON");
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Impossibile leggere il JSON");
         }
-
         if (root == null || !root.isObject()) {
-            throw new IllegalArgumentException(
-                    "Il corpo deve essere un oggetto JSON");
+            throw new IllegalArgumentException("Il corpo deve essere un oggetto JSON");
         }
         if (root.has("owner")) {
             throw new IllegalArgumentException(
@@ -214,19 +173,25 @@ public final class QuizApiServlet extends HttpServlet {
             throw new IllegalArgumentException("Descrizione troppo lunga");
         }
 
+        String visibility = optionalText(root, "visibility").trim();
+        if (visibility.isEmpty()) visibility = "public";
+        if (!"public".equals(visibility) && !"private".equals(visibility)) {
+            throw new IllegalArgumentException(
+                    "Visibility deve essere 'public' o 'private'");
+        }
+
         JsonNode questionNodes = root.get("questions");
         if (questionNodes == null || !questionNodes.isArray()
-                || questionNodes.isEmpty()
-                || questionNodes.size() > MAX_QUESTIONS) {
+                || questionNodes.isEmpty() || questionNodes.size() > MAX_QUESTIONS) {
             throw new IllegalArgumentException(
                     "Servono da 1 a " + MAX_QUESTIONS + " domande");
         }
 
         List<QuizQuestion> questions = new ArrayList<>();
-        for (JsonNode questionNode : questionNodes) {
-            questions.add(readQuestion(questionNode));
+        for (JsonNode node : questionNodes) {
+            questions.add(readQuestion(node));
         }
-        return new QuizDraft(title, description, questions);
+        return new QuizDraft(title, description, visibility, questions);
     }
 
     private QuizQuestion readQuestion(JsonNode question) {
@@ -241,22 +206,19 @@ public final class QuizApiServlet extends HttpServlet {
 
         JsonNode answerNodes = question.get("answers");
         if (answerNodes == null || !answerNodes.isArray()
-                || answerNodes.size() < 2
-                || answerNodes.size() > MAX_ANSWERS) {
+                || answerNodes.size() < 2 || answerNodes.size() > MAX_ANSWERS) {
             throw new IllegalArgumentException(
-                    "Ogni domanda deve avere da 2 a "
-                            + MAX_ANSWERS + " risposte");
+                    "Ogni domanda deve avere da 2 a " + MAX_ANSWERS + " risposte");
         }
         List<String> answers = new ArrayList<>();
-        Set<String> uniqueAnswers = new HashSet<>();
-        for (JsonNode answerNode : answerNodes) {
-            if (!answerNode.isTextual()) {
-                throw new IllegalArgumentException(
-                        "Ogni risposta deve essere testuale");
+        Set<String> unique = new HashSet<>();
+        for (JsonNode node : answerNodes) {
+            if (!node.isTextual()) {
+                throw new IllegalArgumentException("Ogni risposta deve essere testuale");
             }
-            String answer = answerNode.asText().trim();
+            String answer = node.asText().trim();
             if (answer.isEmpty() || answer.length() > MAX_ANSWER_LENGTH
-                    || !uniqueAnswers.add(answer)) {
+                    || !unique.add(answer)) {
                 throw new IllegalArgumentException(
                         "Le risposte devono essere non vuote e diverse");
             }
@@ -268,45 +230,38 @@ public final class QuizApiServlet extends HttpServlet {
             throw new IllegalArgumentException(
                     "La risposta corretta deve essere tra le risposte");
         }
-        long timeLimit = optionalLong(
-                question, "timeLimitMillis", 60000);
-        if (timeLimit < MIN_TIME_LIMIT_MILLIS
-                || timeLimit > MAX_TIME_LIMIT_MILLIS) {
-            throw new IllegalArgumentException(
-                    "Tempo limite non valido");
+        long timeLimit = optionalLong(question, "timeLimitMillis", 60000);
+        if (timeLimit < MIN_TIME_LIMIT_MILLIS || timeLimit > MAX_TIME_LIMIT_MILLIS) {
+            throw new IllegalArgumentException("Tempo limite non valido");
         }
         return new QuizQuestion(text, answers, correct, timeLimit);
     }
 
+    // ---------- Utility ----------
+
     private QuizId optionalQuizId(HttpServletRequest request) {
         String path = request.getPathInfo();
-        if (path == null || path.isBlank() || "/".equals(path)) {
-            return null;
-        }
+        if (path == null || path.isBlank() || "/".equals(path)) return null;
         return parseQuizId(path);
     }
 
     private QuizId requiredQuizId(HttpServletRequest request) {
-        QuizId quizId = optionalQuizId(request);
-        if (quizId == null) {
-            throw new IllegalArgumentException("ID del quiz mancante");
-        }
-        return quizId;
+        QuizId id = optionalQuizId(request);
+        if (id == null) throw new IllegalArgumentException("ID del quiz mancante");
+        return id;
     }
 
     private QuizId parseQuizId(String path) {
-        String[] components = path.substring(1).split("/");
-        if (components.length != 2) {
+        String[] parts = path.substring(1).split("/");
+        if (parts.length != 2) {
             throw new IllegalArgumentException("ID del quiz non valido");
         }
         try {
-            long timestamp = Long.parseLong(components[0]);
-            long unique = Long.parseLong(components[1]);
-            if (timestamp <= 0 || unique <= 0) {
-                throw new NumberFormatException();
-            }
-            return new QuizId(timestamp, unique);
-        } catch (NumberFormatException exception) {
+            long ts = Long.parseLong(parts[0]);
+            long u = Long.parseLong(parts[1]);
+            if (ts <= 0 || u <= 0) throw new NumberFormatException();
+            return new QuizId(ts, u);
+        } catch (NumberFormatException e) {
             throw new IllegalArgumentException("ID del quiz non valido");
         }
     }
@@ -319,11 +274,9 @@ public final class QuizApiServlet extends HttpServlet {
     }
 
     private String authenticatedUsername(
-            HttpServletRequest request,
-            HttpServletResponse response
+            HttpServletRequest request, HttpServletResponse response
     ) throws IOException {
-        String username = AuthenticationSession.username(
-                request.getSession(false));
+        String username = AuthenticationSession.username(request.getSession(false));
         if (username == null) {
             writeError(response, HttpServletResponse.SC_UNAUTHORIZED,
                     "Autenticazione richiesta");
@@ -334,42 +287,36 @@ public final class QuizApiServlet extends HttpServlet {
     private ErlangClient requireClient() throws IOException {
         Object value = getServletContext().getAttribute(
                 ErlangContextListener.CLIENT_ATTRIBUTE);
-        if (value instanceof ErlangClient client) {
-            return client;
-        }
+        if (value instanceof ErlangClient client) return client;
         throw new IOException("Erlang client is not available");
     }
 
     private void handleServiceError(
-            HttpServletResponse response,
-            ErlangServiceException exception
+            HttpServletResponse response, ErlangServiceException e
     ) throws IOException {
-        switch (exception.getReason()) {
-            case "not_found" -> writeError(
-                    response, HttpServletResponse.SC_NOT_FOUND,
-                    "Quiz non trovato");
-            case "not_owner" -> writeError(
-                    response, HttpServletResponse.SC_FORBIDDEN,
+        switch (e.getReason()) {
+            case "not_found" -> writeError(response,
+                    HttpServletResponse.SC_NOT_FOUND, "Quiz non trovato");
+            case "not_owner" -> writeError(response,
+                    HttpServletResponse.SC_FORBIDDEN,
                     "Non sei il proprietario del quiz");
-            default -> writeError(
-                    response, HttpServletResponse.SC_BAD_GATEWAY,
+            default -> writeError(response,
+                    HttpServletResponse.SC_BAD_GATEWAY,
                     "Servizio quiz non disponibile");
         }
     }
 
     private void backendUnavailable(
-            HttpServletResponse response,
-            IOException exception
+            HttpServletResponse response, IOException e
     ) throws IOException {
-        getServletContext().log("Quiz API backend failure", exception);
+        getServletContext().log("Quiz API backend failure", e);
         writeError(response, HttpServletResponse.SC_BAD_GATEWAY,
                 "Backend non disponibile");
     }
 
     private static String requiredText(JsonNode object, String field) {
         JsonNode value = object.get(field);
-        if (value == null || !value.isTextual()
-                || value.asText().isBlank()) {
+        if (value == null || !value.isTextual() || value.asText().isBlank()) {
             throw new IllegalArgumentException(
                     "Campo mancante o non valido: " + field);
         }
@@ -378,44 +325,30 @@ public final class QuizApiServlet extends HttpServlet {
 
     private static String optionalText(JsonNode object, String field) {
         JsonNode value = object.get(field);
-        if (value == null || value.isNull()) {
-            return "";
-        }
+        if (value == null || value.isNull()) return "";
         if (!value.isTextual()) {
-            throw new IllegalArgumentException(
-                    "Campo non valido: " + field);
+            throw new IllegalArgumentException("Campo non valido: " + field);
         }
         return value.asText();
     }
 
-    private static long optionalLong(
-            JsonNode object,
-            String field,
-            long defaultValue
-    ) {
+    private static long optionalLong(JsonNode object, String field, long def) {
         JsonNode value = object.get(field);
-        if (value == null || value.isNull()) {
-            return defaultValue;
-        }
+        if (value == null || value.isNull()) return def;
         if (!value.isIntegralNumber() || !value.canConvertToLong()) {
-            throw new IllegalArgumentException(
-                    "Campo non valido: " + field);
+            throw new IllegalArgumentException("Campo non valido: " + field);
         }
         return value.longValue();
     }
 
     private static void writeError(
-            HttpServletResponse response,
-            int status,
-            String message
+            HttpServletResponse response, int status, String message
     ) throws IOException {
         writeJson(response, status, Map.of("error", message));
     }
 
     private static void writeJson(
-            HttpServletResponse response,
-            int status,
-            Object body
+            HttpServletResponse response, int status, Object body
     ) throws IOException {
         response.setStatus(status);
         response.setContentType("application/json");

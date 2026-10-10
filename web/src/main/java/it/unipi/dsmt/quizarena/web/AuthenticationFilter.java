@@ -17,11 +17,12 @@ import jakarta.servlet.http.HttpSession;
     "/host.html",
     "/play.html",
     "/quizzes",
+    "/authoring.html",
     "/api/*"
 })
 public final class AuthenticationFilter implements Filter {
 
-    @Override
+   @Override
     public void doFilter(
             ServletRequest servletRequest,
             ServletResponse servletResponse,
@@ -29,6 +30,14 @@ public final class AuthenticationFilter implements Filter {
     ) throws IOException, ServletException {
         HttpServletRequest request = (HttpServletRequest) servletRequest;
         HttpServletResponse response = (HttpServletResponse) servletResponse;
+
+        // /api/me è pubblico: serve a mostrare il nome utente nell'header.
+        if ("/api/me".equals(request.getServletPath())) {
+            response.setHeader("Cache-Control", "no-store");
+            chain.doFilter(request, response);
+            return;
+        }
+
         HttpSession session = request.getSession(false);
 
         if (AuthenticationSession.username(session) == null) {

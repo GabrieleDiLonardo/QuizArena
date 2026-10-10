@@ -1,7 +1,7 @@
 -module(room_gen_server).
 -behaviour(gen_server).
 
--export([start_link/2, join/3, rejoin/3, disconnect/2,
+-export([start_link/3, join/3, rejoin/3, disconnect/2,
          start_game/2, next_round/2, answer/4, cancel/2, end_game/2,
          get_state/1, get_player_state/2, get_events_since/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -23,8 +23,8 @@
 
 %% ---------- API pubblica ----------
 
-start_link(Pin, HostPid) ->
-    gen_server:start_link(?MODULE, [Pin, HostPid], []).
+start_link(Pin, HostPid, Visibility) ->
+    gen_server:start_link(?MODULE, [Pin, HostPid, Visibility], []).
 
 join(Pin, Username, PlayerPid) ->
     gen_server:call(via(Pin), {join, Username, PlayerPid}).
@@ -64,22 +64,21 @@ via(Pin) ->
 
 %% ---------- Callback gen_server ----------
 
-init([Pin, HostPid]) ->
+init([Pin, HostPid, Visibility]) ->
     case global:register_name({room, Pin}, self()) of
-        yes ->
-            init_registered_room(Pin, HostPid);
-        no ->
-            {stop, {room_already_registered, Pin}}
+        yes -> init_registered_room(Pin, HostPid, Visibility);
+        no  -> {stop, {room_already_registered, Pin}}
     end.
 
-init_registered_room(Pin, HostPid) ->
+init_registered_room(Pin, HostPid, Visibility) ->
     Questions = load_session_questions(Pin),
     HostMonitorRef = erlang:monitor(process, HostPid),
-    io:format("[room ~s] avviato (host=~p, ~p domande)~n",
-              [Pin, HostPid, length(Questions)]),
+    io:format("[room ~s] avviato (host=~p, visibility=~p, ~p domande)~n",
+              [Pin, HostPid, Visibility, length(Questions)]),
     {ok, #{
         pin => Pin,
         host_pid => HostPid,
+        visibility => Visibility,
         host_monitor_ref => HostMonitorRef,
         quiz_questions => Questions,
         players => #{},
@@ -98,11 +97,7 @@ handle_call({join, Username, PlayerPid}, _From, State)
     Players = maps:get(players, State),
     case maps:get(Username, Players, undefined) of
         #player{connected = false} = Player ->
-            reattach_player(
-                Username,
-                Player,
-                PlayerPid,
-                State);
+            reattach_player(Username, Player, PlayerPid, State);
         #player{} ->
             {reply, {error, already_joined}, State};
         undefined ->
@@ -133,8 +128,6 @@ handle_call({disconnect, PlayerPid}, _From, State)
             NewState = mark_player_disconnected(Username, Player, State),
             {reply, ok, NewState};
         not_found ->
-            %% Una chiusura ripetuta o arrivata dopo il rejoin non deve
-            %% disconnettere la nuova mailbox del giocatore.
             {reply, ok, State}
     end;
 
@@ -228,17 +221,13 @@ handle_call({cancel, From}, _From, State) ->
         ok ->
             case maps:get(status, State) of
                 waiting ->
-                    {stop, normal, ok,
-                     cancel_game_state(State, host_left)};
+                    {stop, normal, ok, cancel_game_state(State, host_left)};
                 playing ->
-                    {stop, normal, ok,
-                     cancel_game_state(State, host_left)};
+                    {stop, normal, ok, cancel_game_state(State, host_left)};
                 round_open ->
-                    {stop, normal, ok,
-                     cancel_game_state(State, host_left)};
+                    {stop, normal, ok, cancel_game_state(State, host_left)};
                 round_closed ->
-                    {stop, normal, ok,
-                     cancel_game_state(State, host_left)};
+                    {stop, normal, ok, cancel_game_state(State, host_left)};
                 Status ->
                     {reply, {error, {invalid_state, Status}}, State}
             end;
@@ -380,7 +369,6 @@ cancel_game_state(State, Reason) ->
     io:format("[room ~s] cancelled: ~p~n", [Pin, Reason]),
     NewState.
 
-%% Avvia una sessione waiting solo se è presente almeno un giocatore connesso
 start_game_if_allowed(State) ->
     case maps:get(status, State) of
         waiting ->
@@ -490,7 +478,6 @@ finish_game(State) ->
             {reply, {error, {session_finish_failed, Reason}}, State}
     end.
 
-%% Trova un player tramite il suo MonitorRef
 find_player_by_monitor(_MonitorRef, Players) when map_size(Players) =:= 0 ->
     not_found;
 find_player_by_monitor(MonitorRef, Players) ->
@@ -584,7 +571,6 @@ emit_event(State, Event) ->
     TrimmedLog = lists:sublist(NewLog, ?MAX_EVENT_LOG),
     State#{seq => NewSeq, event_log => TrimmedLog}.
 
-%% Invia l'evento all'host e a tutti i player connessi.
 broadcast(State, Event) ->
     HostPid = maps:get(host_pid, State),
     HostPid ! {event, Event},
@@ -597,16 +583,12 @@ broadcast(State, Event) ->
         end
     end, Players).
 
-%% Chiude il round quando tutti i player CONNESSI hanno risposto.
-%% I disconnessi non contano.
 maybe_close_round(State) ->
     Players = maps:get(players, State),
     ConnectedPlayers = [P || P <- maps:values(Players),
                              P#player.connected =:= true],
     case ConnectedPlayers of
         [] ->
-            %% Nessun giocatore connesso: nessuno può rispondere.
-            %% Non chiudiamo da soli: aspettiamo il timeout.
             State;
         _ ->
             AllAnswered = lists:all(

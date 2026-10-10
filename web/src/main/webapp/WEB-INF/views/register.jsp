@@ -12,8 +12,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Registrazione - QuizArena</title>
-    <link rel="stylesheet"
-          href="<%= request.getContextPath() %>/css/style.css">
+    <link rel="stylesheet" href="<%= request.getContextPath() %>/css/common.css">
+    <link rel="stylesheet" href="<%= request.getContextPath() %>/css/auth.css">
 </head>
 <body>
     <main class="container auth-form">

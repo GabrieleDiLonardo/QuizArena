@@ -3,23 +3,54 @@
 <head>
     <meta charset="UTF-8">
     <title>Host - QuizArena</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/common.css">
+    <link rel="stylesheet" href="css/host.css">
 </head>
 <body>
     <div class="container">
+        <header class="page-topbar">
+            <a href="index.html" class="btn-back">← Home</a>
+            <span class="user-badge" data-user-badge>
+                👤 <span class="user-name" data-current-user>…</span>
+            </span>
+        </header>
+
         <h1>Host</h1>
+
         <div id="step1">
             <h2>1. Scegli un quiz</h2>
-            <div id="quizList">Caricamento...</div>
+
+            <div class="visibility-picker">
+                <span class="visibility-label">Visibilità della stanza:</span>
+                <button type="button" id="visibilityToggle"
+                        data-visibility="public"
+                        class="visibility-button">
+                    Pubblica
+                </button>
+                <span class="visibility-hint" id="visibilityHint">
+                    Visibile nella lobby
+                </span>
+            </div>
+
+            <h3>I miei quiz</h3>
+            <div id="myQuizList">Caricamento...</div>
+
+            <details class="public-quizzes-details">
+                <summary>Quiz pubblici di altri utenti</summary>
+                <div id="publicQuizList">Caricamento...</div>
+            </details>
         </div>
+
         <div id="step2" style="display:none">
             <h2>2. Stanza creata</h2>
             <p>PIN da comunicare ai giocatori:</p>
             <div class="pin" id="pinDisplay"></div>
+            <p id="visibilityInfo"></p>
             <h3>Giocatori in attesa</h3>
             <ul id="playerList"></ul>
             <button id="startBtn" disabled>Avvia partita</button>
         </div>
+
         <div id="step3" style="display:none">
             <h2>3. Partita in corso</h2>
             <div id="roundInfo"></div>
@@ -30,8 +61,10 @@
             <button id="nextBtn" style="display:none">Prossimo round</button>
             <button id="endBtn">Termina partita</button>
         </div>
+
         <div id="log" class="log"></div>
     </div>
+    <script src="js/user-info.js"></script>
     <script src="js/ws-client.js"></script>
     <script src="js/host.js"></script>
 </body>

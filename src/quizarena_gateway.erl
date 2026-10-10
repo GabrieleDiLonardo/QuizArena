@@ -40,10 +40,13 @@ handle_info({JavaPid, Ref, {authenticate_user, Username, Password}}, State)
 %% ---------- Quiz ----------
 handle_info({JavaPid, Ref, {list_owned_quizzes, Owner}}, State)
   when is_pid(JavaPid), is_reference(Ref), is_list(Owner) ->
-    Result = case quizarena_db:list_quizzes_by_owner(Owner) of
-        {error, Reason} -> {error, Reason};
-        Quizzes when is_list(Quizzes) -> {ok, Quizzes}
-    end,
+    Result = quizarena_db:list_quizzes_by_owner(Owner),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
+handle_info({JavaPid, Ref, {list_browsable_quizzes, Username}}, State)
+  when is_pid(JavaPid), is_reference(Ref), is_list(Username) ->
+    Result = quizarena_db:list_browsable_quizzes(Username),
     JavaPid ! {Ref, Result},
     {noreply, State};
 
@@ -92,10 +95,19 @@ handle_info({JavaPid, Ref, {get_history, User}}, State)
     {noreply, State};
 
 %% ---------- Stanze ----------
+handle_info({JavaPid, Ref, {create_room, QuizId, HostUsername, Visibility}},
+            State)
+  when is_pid(JavaPid), is_reference(Ref), is_tuple(QuizId),
+       is_list(HostUsername),
+       (Visibility =:= public orelse Visibility =:= private) ->
+    Result = create_room(QuizId, HostUsername, JavaPid, Visibility),
+    JavaPid ! {Ref, Result},
+    {noreply, State};
+
 handle_info({JavaPid, Ref, {create_room, QuizId, HostUsername}}, State)
   when is_pid(JavaPid), is_reference(Ref), is_tuple(QuizId),
        is_list(HostUsername) ->
-    Result = create_room(QuizId, HostUsername, JavaPid),
+    Result = create_room(QuizId, HostUsername, JavaPid, public),
     JavaPid ! {Ref, Result},
     {noreply, State};
 
@@ -190,7 +202,6 @@ handle_info(_Message, State) ->
 
 %% ---------- Helper ----------
 
-%% Esegue fuori dal gateway le operazioni lente e invia la risposta correlata.
 reply_async(JavaPid, Ref, Fun) ->
     spawn(fun() ->
         Result = try Fun()
@@ -214,48 +225,52 @@ safe_call(Fun) ->
         exit:Reason -> {error, {call_failed, Reason}}
     end.
 
-create_room(QuizId, HostUsername, HostPid) ->
-    try_create_room(QuizId, HostUsername, HostPid, ?PIN_GENERATION_ATTEMPTS).
+create_room(QuizId, HostUsername, HostPid, Visibility) ->
+    try_create_room(QuizId, HostUsername, HostPid, Visibility,
+                    ?PIN_GENERATION_ATTEMPTS).
 
-try_create_room(_QuizId, _HostUsername, _HostPid, 0) ->
+try_create_room(_QuizId, _HostUsername, _HostPid, _Visibility, 0) ->
     {error, pin_generation_failed};
-try_create_room(QuizId, HostUsername, HostPid, AttemptsLeft) ->
+try_create_room(QuizId, HostUsername, HostPid, Visibility, AttemptsLeft) ->
     Pin = generate_pin(),
     case global:whereis_name({room, Pin}) of
         undefined ->
             open_session_and_start_room(
-                Pin, QuizId, HostUsername, HostPid, AttemptsLeft);
+                Pin, QuizId, HostUsername, HostPid, Visibility, AttemptsLeft);
         _RoomPid ->
-            try_create_room(QuizId, HostUsername, HostPid, AttemptsLeft - 1)
+            try_create_room(QuizId, HostUsername, HostPid, Visibility,
+                            AttemptsLeft - 1)
     end.
 
-open_session_and_start_room(
-  Pin, QuizId, HostUsername, HostPid, AttemptsLeft) ->
+open_session_and_start_room(Pin, QuizId, HostUsername, HostPid,
+                            Visibility, AttemptsLeft) ->
     case quizarena_db:open_session(Pin, QuizId, HostUsername) of
         {ok, _QuestionCount} ->
-            case safe_start_room(Pin, HostPid) of
+            case safe_start_room(Pin, HostPid, Visibility) of
                 {ok, _RoomPid} ->
                     {ok, Pin};
                 {error, {room_already_registered, Pin}} ->
-                    retry_after_rollback(
-                        Pin, QuizId, HostUsername, HostPid, AttemptsLeft);
+                    retry_after_rollback(Pin, QuizId, HostUsername,
+                                         HostPid, Visibility, AttemptsLeft);
                 {error, Reason} ->
                     room_start_error_after_rollback(Pin, Reason)
             end;
         {error, pin_taken} ->
-            try_create_room(QuizId, HostUsername, HostPid, AttemptsLeft - 1);
+            try_create_room(QuizId, HostUsername, HostPid, Visibility,
+                            AttemptsLeft - 1);
         {error, Reason} ->
             {error, Reason}
     end.
 
-safe_start_room(Pin, HostPid) ->
-    try room_sup:start_room(Pin, HostPid)
+safe_start_room(Pin, HostPid, Visibility) ->
+    try room_sup:start_room(Pin, HostPid, Visibility)
     catch Class:Reason -> {error, {Class, Reason}} end.
 
-retry_after_rollback(Pin, QuizId, HostUsername, HostPid, AttemptsLeft) ->
+retry_after_rollback(Pin, QuizId, HostUsername, HostPid, Visibility,
+                     AttemptsLeft) ->
     case quizarena_db:abort_session(Pin) of
-        ok -> try_create_room(
-            QuizId, HostUsername, HostPid, AttemptsLeft - 1);
+        ok -> try_create_room(QuizId, HostUsername, HostPid, Visibility,
+                              AttemptsLeft - 1);
         {error, RollbackReason} -> {error, {rollback_failed, RollbackReason}}
     end.
 
@@ -263,7 +278,8 @@ room_start_error_after_rollback(Pin, StartReason) ->
     case quizarena_db:abort_session(Pin) of
         ok -> {error, {room_start_failed, StartReason}};
         {error, RollbackReason} ->
-            {error, {room_start_failed, StartReason, rollback_failed, RollbackReason}}
+            {error, {room_start_failed, StartReason,
+                     rollback_failed, RollbackReason}}
     end.
 
 list_open_rooms() ->
@@ -277,12 +293,19 @@ room_summary({room, Pin} = Name) ->
         _Pid ->
             try room_gen_server:get_state(Pin) of
                 State ->
-                    {true, #{
-                        pin => Pin,
-                        status => maps:get(status, State, unknown),
-                        num_players => maps:size(maps:get(players, State, #{})),
-                        num_questions => length(maps:get(quiz_questions, State, []))
-                    }}
+                    case maps:get(visibility, State, public) of
+                        public ->
+                            {true, #{
+                                pin => Pin,
+                                status => maps:get(status, State, unknown),
+                                num_players => maps:size(
+                                    maps:get(players, State, #{})),
+                                num_questions => length(
+                                    maps:get(quiz_questions, State, []))
+                            }};
+                        _ ->
+                            false
+                    end
             catch
                 _:_ -> false
             end
