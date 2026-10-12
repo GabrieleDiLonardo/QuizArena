@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -58,6 +59,9 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private String authenticatedUsername;
     private HttpSession httpSession;
     private boolean stateReplayInProgress;
+    private volatile String pendingTimeProbe;
+    private volatile long pendingTimeProbeStartedNanos;
+    private volatile long measuredRoundTripMillis;
 
     private GameWebSocketEndpoint(
             ErlangClient client,
@@ -139,6 +143,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
 
         session.addMessageHandler(String.class, this::handleMessage);
         sendJson(Map.of("type", "connected"));
+        issueTimeProbe();
     }
 
     private void closeUnauthenticated(Session session) {
@@ -171,6 +176,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 case "start_game" -> handleStartGame();
                 case "next_round" -> handleNextRound();
                 case "answer" -> handleAnswer(message);
+                case "time_probe_reply" -> handleTimeProbeReply(message);
                 case "end_game" -> handleEndGame();
                 case "list_browsable_quizzes" -> handleListBrowsableQuizzes();
                 case "list_owned_quizzes" -> handleListOwnedQuizzes();
@@ -205,12 +211,20 @@ public final class GameWebSocketEndpoint extends Endpoint {
             requiredLong(quizIdNode, "uniqueInteger"));
 
     String visibility = "public";
-    JsonNode visibilityNode = message.path("visibility");
-    if (visibilityNode.isTextual()) {
-        String candidate = visibilityNode.asText();
-        if ("public".equals(candidate) || "private".equals(candidate)) {
-            visibility = candidate;
+    JsonNode visibilityNode = message.get("visibility");
+    if (visibilityNode != null && !visibilityNode.isNull()) {
+        if (!visibilityNode.isTextual()) {
+            sendError("invalid_request",
+                    "Visibility must be public or private");
+            return;
         }
+        String candidate = visibilityNode.asText();
+        if (!"public".equals(candidate) && !"private".equals(candidate)) {
+            sendError("invalid_request",
+                    "Visibility must be public or private");
+            return;
+        }
+        visibility = candidate;
     }
 
     String pin = currentErlangSession().createRoom(
@@ -358,9 +372,27 @@ public final class GameWebSocketEndpoint extends Endpoint {
         }
         long round = requiredLong(message, "round");
         String answer = requiredText(message, "answer");
+        long clientElapsedMillis = requiredLong(message,
+                "clientElapsedMillis");
+        if (clientElapsedMillis < 0) {
+            throw new IllegalArgumentException(
+                    "clientElapsedMillis must not be negative");
+        }
         currentErlangSession().answer(
-                roomPin, round, answer, ERLANG_TIMEOUT_MILLIS);
+                roomPin, round, answer, clientElapsedMillis,
+                measuredRoundTripMillis, ERLANG_TIMEOUT_MILLIS);
         sendJson(Map.of("type", "ok", "action", "answer"));
+    }
+
+    private void handleTimeProbeReply(JsonNode message) {
+        String nonce = requiredText(message, "nonce");
+        if (!nonce.equals(pendingTimeProbe)) {
+            return;
+        }
+        measuredRoundTripMillis = Math.max(0,
+                (System.nanoTime() - pendingTimeProbeStartedNanos)
+                        / 1_000_000L);
+        pendingTimeProbe = null;
     }
 
     private void handleEndGame()
@@ -418,6 +450,17 @@ public final class GameWebSocketEndpoint extends Endpoint {
 
     private void sendConvertedEvent(Object event) {
         sendJson(Map.of("type", "event", "event", event));
+        if (event instanceof Map<?, ?> map
+                && "round_started".equals(map.get("type"))) {
+            issueTimeProbe();
+        }
+    }
+
+    private void issueTimeProbe() {
+        String nonce = UUID.randomUUID().toString();
+        pendingTimeProbeStartedNanos = System.nanoTime();
+        pendingTimeProbe = nonce;
+        sendJson(Map.of("type", "time_probe", "nonce", nonce));
     }
 
     private static long sequenceOf(Object value) {

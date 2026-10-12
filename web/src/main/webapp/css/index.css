@@ -6,6 +6,15 @@
     margin-top: 20px;
 }
 
+.menu form {
+    margin: 0;
+}
+
+.menu form .btn {
+    width: 100%;
+    margin: 0;
+}
+
 .menu .btn {
     text-align: center;
     margin: 0;

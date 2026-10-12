@@ -1,14 +1,16 @@
 -module(room_gen_server).
 -behaviour(gen_server).
 
--export([start_link/3, join/3, rejoin/3, disconnect/2,
-         start_game/2, next_round/2, answer/4, cancel/2, end_game/2,
+-export([start_link/4, join/3, rejoin/3, disconnect/2,
+         start_game/2, next_round/2, answer/6, cancel/2, end_game/2,
          get_state/1, get_player_state/2, get_events_since/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(POINTS_BASE, 1000).
 -define(ROUND_TIME_LIMIT, 60000).
 -define(MAX_EVENT_LOG, 200).
+-define(ANSWER_TIME_TOLERANCE_MS, 1000).
+-define(MAX_ACCEPTED_RTT_MS, 2000).
 
 -record(player, {
     username,
@@ -23,8 +25,8 @@
 
 %% ---------- API pubblica ----------
 
-start_link(Pin, HostPid, Visibility) ->
-    gen_server:start_link(?MODULE, [Pin, HostPid, Visibility], []).
+start_link(Pin, SessionId, HostPid, Visibility) ->
+    gen_server:start_link(?MODULE, [Pin, SessionId, HostPid, Visibility], []).
 
 join(Pin, Username, PlayerPid) ->
     gen_server:call(via(Pin), {join, Username, PlayerPid}).
@@ -41,8 +43,10 @@ start_game(Pin, RequesterPid) ->
 next_round(Pin, RequesterPid) ->
     gen_server:call(via(Pin), {next_round, RequesterPid}).
 
-answer(Pin, PlayerPid, Round, Answer) ->
-    gen_server:call(via(Pin), {answer, PlayerPid, Round, Answer}).
+answer(Pin, PlayerPid, Round, Answer, ClientElapsedMs, RttMs) ->
+    gen_server:call(via(Pin),
+                    {answer, PlayerPid, Round, Answer,
+                     ClientElapsedMs, RttMs}).
 
 cancel(Pin, RequesterPid) ->
     gen_server:call(via(Pin), {cancel, RequesterPid}).
@@ -64,19 +68,20 @@ via(Pin) ->
 
 %% ---------- Callback gen_server ----------
 
-init([Pin, HostPid, Visibility]) ->
+init([Pin, SessionId, HostPid, Visibility]) ->
     case global:register_name({room, Pin}, self()) of
-        yes -> init_registered_room(Pin, HostPid, Visibility);
+        yes -> init_registered_room(Pin, SessionId, HostPid, Visibility);
         no  -> {stop, {room_already_registered, Pin}}
     end.
 
-init_registered_room(Pin, HostPid, Visibility) ->
-    Questions = load_session_questions(Pin),
+init_registered_room(Pin, SessionId, HostPid, Visibility) ->
+    Questions = load_session_questions(SessionId),
     HostMonitorRef = erlang:monitor(process, HostPid),
     io:format("[room ~s] avviato (host=~p, visibility=~p, ~p domande)~n",
               [Pin, HostPid, Visibility, length(Questions)]),
     {ok, #{
         pin => Pin,
+        session_id => SessionId,
         host_pid => HostPid,
         visibility => Visibility,
         host_monitor_ref => HostMonitorRef,
@@ -185,7 +190,10 @@ handle_call({next_round, From}, _From, State) ->
             {reply, {error, Reason}, State}
     end;
 
-handle_call({answer, PlayerPid, Round, Answer}, _From, State) ->
+handle_call({answer, PlayerPid, Round, Answer, ClientElapsedMs, RttMs},
+            _From, State)
+  when is_integer(ClientElapsedMs), ClientElapsedMs >= 0,
+       is_integer(RttMs), RttMs >= 0 ->
     CurrentRound = maps:get(current_round, State),
     Status = maps:get(status, State),
     Players = maps:get(players, State),
@@ -199,9 +207,17 @@ handle_call({answer, PlayerPid, Round, Answer}, _From, State) ->
                     case Player#player.answered of
                         true -> {reply, {error, already_answered}, State};
                         false ->
+                            ServerElapsedMs = erlang:monotonic_time(millisecond)
+                                - maps:get(round_start_time, State),
+                            TimeLimitMs = maps:get(
+                                time_limit, maps:get(question, State)),
+                            ElapsedMs = validated_answer_time(
+                                ClientElapsedMs, ServerElapsedMs,
+                                RttMs, TimeLimitMs,
+                                maps:get(pin, State), Username),
                             UpdatedPlayer = Player#player{
                                 answered = true,
-                                answer_time = erlang:monotonic_time(millisecond),
+                                answer_time = ElapsedMs,
                                 chosen_answer = Answer
                             },
                             NewPlayers = maps:put(Username, UpdatedPlayer, Players),
@@ -215,6 +231,10 @@ handle_call({answer, PlayerPid, Round, Answer}, _From, State) ->
         _ ->
             {reply, {error, round_not_open}, State}
     end;
+
+handle_call({answer, _PlayerPid, _Round, _Answer,
+             _ClientElapsedMs, _RttMs}, _From, State) ->
+    {reply, {error, invalid_request}, State};
 
 handle_call({cancel, From}, _From, State) ->
     case authorize_host(From, State) of
@@ -355,7 +375,8 @@ cancel_after_host_disconnect(State) ->
 cancel_game_state(State, Reason) ->
     State1 = cancel_timer(State),
     Pin = maps:get(pin, State1),
-    case quizarena_db:cancel_session(Pin) of
+    SessionId = maps:get(session_id, State1),
+    case quizarena_db:cancel_session(SessionId) of
         ok -> ok;
         {error, DbReason} ->
             io:format("[room ~s] cancel_session failed: ~p~n",
@@ -380,7 +401,8 @@ start_game_if_allowed(State) ->
                     {reply, {error, no_players}, State};
                 _ ->
                     Pin = maps:get(pin, State),
-                    case quizarena_db:mark_session_started(Pin) of
+                    SessionId = maps:get(session_id, State),
+                    case quizarena_db:mark_session_started(SessionId) of
                         ok ->
                             State1 = State#{
                                 status => playing,
@@ -458,12 +480,13 @@ open_next_round(State) ->
 
 finish_game(State) ->
     Pin = maps:get(pin, State),
+    SessionId = maps:get(session_id, State),
     Players = maps:get(players, State),
     PlayerResults = [
         {P#player.username, P#player.score}
         || P <- maps:values(Players)
     ],
-    case quizarena_db:finish_session(Pin, PlayerResults) of
+    case quizarena_db:finish_session(SessionId, PlayerResults) of
         ok ->
             State1 = cancel_timer(State),
             Leaderboard = build_leaderboard(Players),
@@ -540,11 +563,11 @@ reattach_player(Username, Player, NewPid, State) ->
               [maps:get(pin, State), Username, NewPid]),
     {reply, ok, NewState}.
 
-load_session_questions(Pin) ->
+load_session_questions(SessionId) ->
     F = fun() ->
         All = mnesia:foldl(
-            fun({session_questions, {P, N}, Text, Ans, Corr, TL}, Acc) ->
-                case P =:= Pin of
+            fun({session_questions, {Id, N}, Text, Ans, Corr, TL}, Acc) ->
+                case Id =:= SessionId of
                     true -> [{N, #{text => Text, answers => Ans,
                                    correct => Corr, time_limit => TL}} | Acc];
                     false -> Acc
@@ -606,28 +629,45 @@ close_round(State) ->
     Round = maps:get(current_round, State1),
     Question = maps:get(question, State1),
     Correct = maps:get(correct, Question),
-    StartTime = maps:get(round_start_time, State1),
     TimeLimit = maps:get(time_limit, Question),
 
     Players = maps:get(players, State1),
     UpdatedPlayers = maps:map(fun(_Username, P) ->
         case P#player.answered andalso P#player.chosen_answer =:= Correct of
             true ->
-                Elapsed = P#player.answer_time - StartTime,
-                Points = compute_score(Elapsed, TimeLimit),
+                Points = compute_score(P#player.answer_time, TimeLimit),
                 P#player{score = P#player.score + Points};
             false -> P
         end
     end, Players),
 
     Leaderboard = build_leaderboard(UpdatedPlayers),
+    HasNextRound = Round < length(maps:get(quiz_questions, State1)),
     State2 = State1#{players => UpdatedPlayers, status => round_closed},
     emit_event(State2, #{
         type => round_closed,
         round => Round,
         correct => Correct,
+        has_next_round => HasNextRound,
         leaderboard => Leaderboard
     }).
+
+validated_answer_time(ClientElapsedMs, ServerElapsedMs, RttMs,
+                      TimeLimitMs, Pin, Username) ->
+    AcceptedRttMs = min(RttMs, ?MAX_ACCEPTED_RTT_MS),
+    AllowedDifferenceMs = ?ANSWER_TIME_TOLERANCE_MS + AcceptedRttMs,
+    DifferenceMs = abs(ServerElapsedMs - ClientElapsedMs),
+    case ClientElapsedMs =< TimeLimitMs
+         andalso DifferenceMs =< AllowedDifferenceMs of
+        true ->
+            ClientElapsedMs;
+        false ->
+            io:format(
+                "[room ~s] suspicious answer time from ~s: "
+                "client=~p ms server=~p ms rtt=~p ms~n",
+                [Pin, Username, ClientElapsedMs, ServerElapsedMs, RttMs]),
+            max(0, ServerElapsedMs)
+    end.
 
 compute_score(ElapsedMs, TimeLimitMs) ->
     Remaining = max(0, TimeLimitMs - ElapsedMs),

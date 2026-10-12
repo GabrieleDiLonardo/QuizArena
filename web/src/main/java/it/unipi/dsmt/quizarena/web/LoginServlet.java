@@ -31,6 +31,11 @@ public final class LoginServlet extends HttpServlet {
             HttpServletRequest request,
             HttpServletResponse response
     ) throws IOException, ServletException {
+        if (AuthenticationSession.username(request.getSession(false)) != null) {
+            response.sendRedirect(response.encodeRedirectURL(
+                    request.getContextPath() + "/"));
+            return;
+        }
         if ("true".equals(request.getParameter("registered"))) {
             request.setAttribute(
                     "loginMessage",
@@ -74,7 +79,7 @@ public final class LoginServlet extends HttpServlet {
                     authenticatedUsername
             );
             response.sendRedirect(response.encodeRedirectURL(
-                    request.getContextPath() + "/lobby.html"));
+                    request.getContextPath() + "/"));
         } catch (ErlangServiceException exception) {
             if ("invalid_credentials".equals(exception.getReason())) {
                 showError(request, response,

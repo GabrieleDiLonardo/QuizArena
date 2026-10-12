@@ -23,6 +23,7 @@ import it.unipi.dsmt.quizarena.model.QuizDraft;
 import it.unipi.dsmt.quizarena.model.QuizId;
 import it.unipi.dsmt.quizarena.model.QuizQuestion;
 import it.unipi.dsmt.quizarena.model.QuizSummary;
+import it.unipi.dsmt.quizarena.model.GameHistoryEntry;
 
 public final class ErlangClient implements AutoCloseable {
 
@@ -203,6 +204,31 @@ public final class ErlangClient implements AutoCloseable {
                 remoteNode, gatewayName, request, timeoutMillis));
     }
 
+    // ---------- Storico ----------
+
+    public List<GameHistoryEntry> getHistory(
+            String remoteNode, String gatewayName,
+            String username, long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
+                new OtpErlangAtom("get_history"),
+                new OtpErlangString(username)
+        });
+        OtpErlangObject content = requireOk(sendRequest(
+                remoteNode, gatewayName, request, timeoutMillis));
+        if (!(content instanceof OtpErlangList historyList)) {
+            throw new IOException("Expected a list of game results");
+        }
+
+        List<GameHistoryEntry> history = new ArrayList<>(historyList.arity());
+        for (OtpErlangObject term : historyList) {
+            history.add(decodeHistoryEntry(term));
+        }
+        history.sort((left, right) -> Long.compare(
+                right.finishedAtMillis(), left.finishedAtMillis()));
+        return List.copyOf(history);
+    }
+
     // ---------- Helpers ----------
 
     private static OtpErlangObject requireOk(OtpErlangObject result)
@@ -356,6 +382,23 @@ public final class ErlangClient implements AutoCloseable {
         );
     }
 
+    private static GameHistoryEntry decodeHistoryEntry(OtpErlangObject term)
+            throws IOException {
+        if (!(term instanceof OtpErlangMap history)) {
+            throw new IOException("Malformed game history entry");
+        }
+        return new GameHistoryEntry(
+                decodeString(required(history, "session_id"), "session id"),
+                decodeString(required(history, "quiz_title"), "quiz title"),
+                decodeBoolean(required(history, "hosted"), "hosted"),
+                decodeLong(required(history, "participant_count"),
+                        "participant count"),
+                decodeOptionalLong(required(history, "score"), "score"),
+                decodeOptionalLong(required(history, "rank"), "rank"),
+                decodeLong(required(history, "finished_at"), "finished at")
+        );
+    }
+
     // ---------- Encode ----------
 
     private static OtpErlangTuple encodeQuizId(QuizId quizId) {
@@ -449,10 +492,21 @@ public final class ErlangClient implements AutoCloseable {
         throw new IOException("Field is not an integer: " + field);
     }
 
+    private static Long decodeOptionalLong(OtpErlangObject term, String field)
+            throws IOException {
+        if (new OtpErlangAtom("undefined").equals(term)) return null;
+        return decodeLong(term, field);
+    }
+
     private static boolean decodeBoolean(OtpErlangObject term, String field)
             throws IOException {
         if (term instanceof OtpErlangAtom a) {
-            return "true".equals(a.atomValue());
+            return switch (a.atomValue()) {
+                case "true" -> true;
+                case "false" -> false;
+                default -> throw new IOException(
+                        "Field is not a boolean: " + field);
+            };
         }
         throw new IOException("Field is not a boolean: " + field);
     }

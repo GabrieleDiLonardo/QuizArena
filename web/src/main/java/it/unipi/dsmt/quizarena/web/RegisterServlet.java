@@ -30,6 +30,11 @@ public final class RegisterServlet extends HttpServlet {
             HttpServletRequest request,
             HttpServletResponse response
     ) throws IOException, ServletException {
+        if (AuthenticationSession.username(request.getSession(false)) != null) {
+            response.sendRedirect(response.encodeRedirectURL(
+                    request.getContextPath() + "/"));
+            return;
+        }
         request.getRequestDispatcher("/WEB-INF/views/register.jsp")
                 .forward(request, response);
     }

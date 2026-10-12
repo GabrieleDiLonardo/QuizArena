@@ -22,6 +22,6 @@ public final class LogoutServlet extends HttpServlet {
         }
 
         response.sendRedirect(response.encodeRedirectURL(
-                request.getContextPath() + "/login?loggedOut=true"));
+                request.getContextPath() + "/"));
     }
 }

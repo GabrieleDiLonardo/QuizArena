@@ -1,0 +1,33 @@
+/* ===== Elenco stanze ===== */
+#roomsList {
+    margin-top: 16px;
+}
+
+.room-card {
+    padding: 16px;
+    margin: 12px 0;
+    background: #fafafa;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+}
+
+.room-pin {
+    color: #4b3f99;
+    font-family: monospace;
+    font-size: 28px;
+    font-weight: bold;
+    letter-spacing: 4px;
+}
+
+.room-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin: 8px 0;
+    color: #666;
+    font-size: 14px;
+}
+
+.room-meta strong {
+    color: #4b3f99;
+}

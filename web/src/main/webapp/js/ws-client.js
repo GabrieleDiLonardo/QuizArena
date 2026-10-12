@@ -21,6 +21,10 @@ class QuizWsClient {
         this.ws.onmessage = (e) => {
             try {
                 const msg = JSON.parse(e.data);
+                if (msg.type === 'time_probe' && msg.nonce) {
+                    this.send({action: 'time_probe_reply', nonce: msg.nonce});
+                    return;
+                }
                 this.emit(msg);
             } catch (err) {
                 console.error('Bad JSON:', e.data);

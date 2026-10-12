@@ -16,6 +16,7 @@ ws.connect();
 let currentPin = null;
 let players = [];
 let roomVisibility = 'public';
+let cancelPending = false;
 
 // ===== Toggle visibilità stanza =====
 const visibilityToggle = document.getElementById('visibilityToggle');
@@ -48,6 +49,17 @@ document.getElementById('endBtn').onclick = () => {
         ws.send({action: 'end_game'});
     }
 };
+document.querySelectorAll('.cancel-room-btn').forEach(btn => {
+    btn.onclick = () => {
+        if (confirm('Annullare la stanza? La partita non verrà salvata nello storico.')) {
+            cancelPending = true;
+            document.querySelectorAll('.cancel-room-btn').forEach(button => {
+                button.disabled = true;
+            });
+            ws.send({action: 'cancel_room'});
+        }
+    };
+});
 
 // ===== Messaggi dal server =====
 function handleMessage(msg) {
@@ -78,10 +90,21 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'error') {
+        if (cancelPending) {
+            cancelPending = false;
+            document.querySelectorAll('.cancel-room-btn').forEach(button => {
+                button.disabled = false;
+            });
+        }
         alert('Errore: ' + msg.message);
         return;
     }
     if (msg.type === 'ok') {
+        return;
+    }
+    if (msg.type === 'cancelled') {
+        alert('Stanza annullata.');
+        location.reload();
         return;
     }
     if (msg.type === 'event') {
@@ -187,7 +210,7 @@ function handleEvent(ev) {
     } else if (ev.type === 'game_finished') {
         showFinal(ev);
     } else if (ev.type === 'game_cancelled') {
-        alert('Partita cancellata: ' + (ev.reason || 'motivo sconosciuto'));
+        alert('Stanza annullata.');
         location.reload();
     }
 }
@@ -207,13 +230,19 @@ function showRound(ev) {
 }
 
 function showResults(ev) {
-    document.getElementById('roundInfo').textContent = `Round ${ev.round} chiuso`;
+    document.getElementById('roundInfo').textContent = ev.has_next_round === false
+        ? `Ultimo round (${ev.round}) concluso. Termina la partita per salvare i risultati.`
+        : `Round ${ev.round} chiuso`;
     document.getElementById('correctAnswer').textContent =
         `Risposta corretta: ${ev.correct}`;
     renderLeaderboard(ev.leaderboard);
     const nextBtn = document.getElementById('nextBtn');
-    nextBtn.style.display = 'inline-block';
-    nextBtn.textContent = 'Prossimo round';
+    if (ev.has_next_round === false) {
+        nextBtn.style.display = 'none';
+    } else {
+        nextBtn.style.display = 'inline-block';
+        nextBtn.textContent = 'Prossimo round';
+    }
 }
 
 function showFinal(ev) {
@@ -223,6 +252,9 @@ function showFinal(ev) {
     renderLeaderboard(ev.final_leaderboard);
     document.getElementById('nextBtn').style.display = 'none';
     document.getElementById('endBtn').disabled = true;
+    document.querySelectorAll('.cancel-room-btn').forEach(button => {
+        button.disabled = true;
+    });
 }
 
 function renderLeaderboard(lb) {

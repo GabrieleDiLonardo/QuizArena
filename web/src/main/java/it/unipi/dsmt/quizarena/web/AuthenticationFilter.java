@@ -16,13 +16,13 @@ import jakarta.servlet.http.HttpSession;
     "/lobby.html",
     "/host.html",
     "/play.html",
-    "/quizzes",
+    "/history",
     "/authoring.html",
     "/api/*"
 })
 public final class AuthenticationFilter implements Filter {
 
-   @Override
+    @Override
     public void doFilter(
             ServletRequest servletRequest,
             ServletResponse servletResponse,
@@ -50,7 +50,7 @@ public final class AuthenticationFilter implements Filter {
                 return;
             }
             response.sendRedirect(response.encodeRedirectURL(
-                    request.getContextPath() + "/login"));
+                    request.getContextPath() + "/"));
             return;
         }
 

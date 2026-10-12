@@ -254,6 +254,7 @@ public class ErlangGameSession implements AutoCloseable {
     }
 
     public void answer(String pin, long round, String answer,
+                       long clientElapsedMillis, long roundTripMillis,
                        long timeoutMillis)
             throws IOException, ErlangServiceException {
         requireText(pin, "pin");
@@ -262,7 +263,9 @@ public class ErlangGameSession implements AutoCloseable {
             new OtpErlangAtom("answer"),
             new OtpErlangString(pin),
             new OtpErlangLong(round),
-            new OtpErlangString(answer)
+            new OtpErlangString(answer),
+            new OtpErlangLong(clientElapsedMillis),
+            new OtpErlangLong(roundTripMillis)
         });
         decodeOkResult(sendRequest(request, timeoutMillis));
     }

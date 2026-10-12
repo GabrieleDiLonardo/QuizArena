@@ -17,6 +17,7 @@ let currentRound = null;
 let answered = false;
 let timerInterval = null;
 let roundDeadline = 0;
+let roundStartedAt = 0;
 let rejoinPending = false;
 
 // ===== Precompila il PIN dall'URL (da lobby.html?pin=XXX) =====
@@ -141,15 +142,18 @@ function showRound(ev) {
         box.appendChild(btn);
     });
 
-    // Timer basato su timestamp assoluto (no drift)
+    // Il clock monotono locale misura il tempo di risposta senza dipendere
+    // dall'orologio di calendario del dispositivo.
     const remainingTime = ev.remaining_time ?? ev.question.time_limit;
-    roundDeadline = Date.now() + remainingTime;
+    const alreadyElapsed = ev.question.time_limit - remainingTime;
+    roundStartedAt = performance.now() - alreadyElapsed;
+    roundDeadline = performance.now() + remainingTime;
     timerInterval = setInterval(updateTimer, 100);
     updateTimer();
 }
 
 function updateTimer() {
-    const remaining = Math.max(0, roundDeadline - Date.now());
+    const remaining = Math.max(0, roundDeadline - performance.now());
     const timerEl = document.getElementById('timerDisplay');
     if (remaining <= 0) {
         timerEl.textContent = 'Tempo scaduto';
@@ -178,7 +182,9 @@ function submitAnswer(answer, btn) {
     ws.send({
         action: 'answer',
         round: currentRound,
-        answer: answer
+        answer: answer,
+        clientElapsedMillis: Math.max(0,
+            Math.round(performance.now() - roundStartedAt))
     });
 }
 

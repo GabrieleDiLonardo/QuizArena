@@ -3,7 +3,22 @@
 (function () {
     const nameEls = document.querySelectorAll('[data-current-user]');
     const badgeEls = document.querySelectorAll('[data-user-badge]');
-    if (nameEls.length === 0 && badgeEls.length === 0) return;
+    const authenticatedEls = document.querySelectorAll('[data-authenticated-only]');
+    const guestEls = document.querySelectorAll('[data-guest-only]');
+    if (nameEls.length === 0 && badgeEls.length === 0 &&
+            authenticatedEls.length === 0 && guestEls.length === 0) return;
+
+    function showAuthenticationState(authenticated) {
+        authenticatedEls.forEach(function (el) {
+            el.hidden = !authenticated;
+        });
+        guestEls.forEach(function (el) {
+            el.hidden = authenticated;
+        });
+        badgeEls.forEach(function (el) {
+            el.hidden = !authenticated;
+        });
+    }
 
     // Ricava il context path dalla URL corrente.
     // Es. /quizarena/host.html → /quizarena
@@ -28,15 +43,12 @@
                 nameEls.forEach(function (el) {
                     el.textContent = data.username;
                 });
+                showAuthenticationState(true);
             } else {
-                badgeEls.forEach(function (el) {
-                    el.style.display = 'none';
-                });
+                showAuthenticationState(false);
             }
         })
         .catch(function () {
-            badgeEls.forEach(function (el) {
-                el.style.display = 'none';
-            });
+            showAuthenticationState(false);
         });
 })();

@@ -1,17 +1,13 @@
 -module(room_sup).
 -behaviour(supervisor).
 
--export([start_link/0, start_room/2, start_room/3, init/1]).
+-export([start_link/0, start_room/4, init/1]).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-%% Retrocompatibile: default public
-start_room(Pin, HostPid) ->
-    start_room(Pin, HostPid, public).
-
-start_room(Pin, HostPid, Visibility) ->
-    supervisor:start_child(?MODULE, [Pin, HostPid, Visibility]).
+start_room(Pin, SessionId, HostPid, Visibility) ->
+    supervisor:start_child(?MODULE, [Pin, SessionId, HostPid, Visibility]).
 
 init([]) ->
     SupFlags = #{strategy => simple_one_for_one,

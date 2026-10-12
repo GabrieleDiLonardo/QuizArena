@@ -40,13 +40,17 @@ handle_info({JavaPid, Ref, {authenticate_user, Username, Password}}, State)
 %% ---------- Quiz ----------
 handle_info({JavaPid, Ref, {list_owned_quizzes, Owner}}, State)
   when is_pid(JavaPid), is_reference(Ref), is_list(Owner) ->
-    Result = quizarena_db:list_quizzes_by_owner(Owner),
+    Result = safe_call(fun() ->
+        quizarena_db:list_quizzes_by_owner(Owner)
+    end),
     JavaPid ! {Ref, Result},
     {noreply, State};
 
 handle_info({JavaPid, Ref, {list_browsable_quizzes, Username}}, State)
   when is_pid(JavaPid), is_reference(Ref), is_list(Username) ->
-    Result = quizarena_db:list_browsable_quizzes(Username),
+    Result = safe_call(fun() ->
+        quizarena_db:list_browsable_quizzes(Username)
+    end),
     JavaPid ! {Ref, Result},
     {noreply, State};
 
@@ -162,11 +166,15 @@ handle_info({JavaPid, Ref, {next_round, Pin}}, State)
     JavaPid ! {Ref, Result},
     {noreply, State};
 
-handle_info({JavaPid, Ref, {answer, Pin, Round, Answer}}, State)
+handle_info({JavaPid, Ref,
+             {answer, Pin, Round, Answer, ClientElapsedMs, RttMs}}, State)
   when is_pid(JavaPid), is_reference(Ref), is_list(Pin),
-       is_integer(Round), is_list(Answer) ->
+       is_integer(Round), is_list(Answer),
+       is_integer(ClientElapsedMs), ClientElapsedMs >= 0,
+       is_integer(RttMs), RttMs >= 0 ->
     Result = safe_call(fun() ->
-        room_gen_server:answer(Pin, JavaPid, Round, Answer)
+        room_gen_server:answer(Pin, JavaPid, Round, Answer,
+                               ClientElapsedMs, RttMs)
     end),
     JavaPid ! {Ref, Result},
     {noreply, State};
@@ -222,7 +230,8 @@ safe_call(Fun) ->
         exit:{noproc, _} -> {error, room_not_found};
         exit:{timeout, _} -> {error, timeout};
         exit:{nodedown, _} -> {error, node_down};
-        exit:Reason -> {error, {call_failed, Reason}}
+        exit:Reason -> {error, {call_failed, Reason}};
+        Class:Reason -> {error, {call_failed, {Class, Reason}}}
     end.
 
 create_room(QuizId, HostUsername, HostPid, Visibility) ->
@@ -245,15 +254,15 @@ try_create_room(QuizId, HostUsername, HostPid, Visibility, AttemptsLeft) ->
 open_session_and_start_room(Pin, QuizId, HostUsername, HostPid,
                             Visibility, AttemptsLeft) ->
     case quizarena_db:open_session(Pin, QuizId, HostUsername) of
-        {ok, _QuestionCount} ->
-            case safe_start_room(Pin, HostPid, Visibility) of
+        {ok, SessionId, _QuestionCount} ->
+            case safe_start_room(Pin, SessionId, HostPid, Visibility) of
                 {ok, _RoomPid} ->
                     {ok, Pin};
                 {error, {room_already_registered, Pin}} ->
-                    retry_after_rollback(Pin, QuizId, HostUsername,
+                    retry_after_rollback(SessionId, QuizId, HostUsername,
                                          HostPid, Visibility, AttemptsLeft);
                 {error, Reason} ->
-                    room_start_error_after_rollback(Pin, Reason)
+                    room_start_error_after_rollback(SessionId, Reason)
             end;
         {error, pin_taken} ->
             try_create_room(QuizId, HostUsername, HostPid, Visibility,
@@ -262,20 +271,20 @@ open_session_and_start_room(Pin, QuizId, HostUsername, HostPid,
             {error, Reason}
     end.
 
-safe_start_room(Pin, HostPid, Visibility) ->
-    try room_sup:start_room(Pin, HostPid, Visibility)
+safe_start_room(Pin, SessionId, HostPid, Visibility) ->
+    try room_sup:start_room(Pin, SessionId, HostPid, Visibility)
     catch Class:Reason -> {error, {Class, Reason}} end.
 
-retry_after_rollback(Pin, QuizId, HostUsername, HostPid, Visibility,
+retry_after_rollback(SessionId, QuizId, HostUsername, HostPid, Visibility,
                      AttemptsLeft) ->
-    case quizarena_db:abort_session(Pin) of
+    case quizarena_db:abort_session(SessionId) of
         ok -> try_create_room(QuizId, HostUsername, HostPid, Visibility,
                               AttemptsLeft - 1);
         {error, RollbackReason} -> {error, {rollback_failed, RollbackReason}}
     end.
 
-room_start_error_after_rollback(Pin, StartReason) ->
-    case quizarena_db:abort_session(Pin) of
+room_start_error_after_rollback(SessionId, StartReason) ->
+    case quizarena_db:abort_session(SessionId) of
         ok -> {error, {room_start_failed, StartReason}};
         {error, RollbackReason} ->
             {error, {room_start_failed, StartReason,
