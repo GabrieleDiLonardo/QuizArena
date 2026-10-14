@@ -901,9 +901,14 @@ validated_answer_time(ClientElapsedMs, ServerElapsedMs, RttMs,
             {max(0, ServerElapsedMs), true}
     end.
 
+%% Una risposta corretta vale da POINTS_BASE (istantanea) a POINTS_BASE/2
+%% (alla scadenza), decrescendo linearmente: la correttezza conta sempre
+%% piu' della velocita'. Oltre la scadenza (possibile solo nel margine,
+%% quando per il punteggio vale il tempo del server) non vale nulla.
+compute_score(ElapsedMs, TimeLimitMs) when ElapsedMs > TimeLimitMs ->
+    0;
 compute_score(ElapsedMs, TimeLimitMs) ->
-    Remaining = max(0, TimeLimitMs - ElapsedMs),
-    round(?POINTS_BASE * Remaining / TimeLimitMs).
+    round(?POINTS_BASE * (1 - max(0, ElapsedMs) / (2 * TimeLimitMs))).
 
 build_leaderboard(Players) ->
     List = [{P#player.username, P#player.score} || P <- maps:values(Players)],

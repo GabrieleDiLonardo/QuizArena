@@ -24,6 +24,7 @@ room_test_() ->
              {timeout, 30, fun() -> concurrent_room_creation(QuizIds) end},
              {timeout, 30, fun() -> orphan_sessions_are_swept(QuizIds) end},
              {timeout, 30, fun() -> late_answer_within_grace(QuizIds) end},
+             {timeout, 30, fun() -> answer_after_deadline_scores_zero(QuizIds) end},
              {timeout, 30, fun() -> suspicious_time_is_flagged(QuizIds) end},
              {timeout, 30, fun() -> missed_events_are_replayed(QuizIds) end},
              {timeout, 30, fun() -> lobby_is_pushed(QuizIds) end}
@@ -101,7 +102,7 @@ full_game(#{two := QuizId}) ->
     ?assertEqual({ok, ok}, req(P2, {answer, Pin, 1, "b", 100, 40})),
     #{leaderboard := [{"p1", Score1}, {"p2", 0}], has_next_round := true} =
         expect_event(H, round_closed),
-    ?assertEqual(950, Score1),
+    ?assertEqual(975, Score1),
     ?assertEqual({error, round_not_open},
                  req(P2, {answer, Pin, 1, "a", 100, 40})),
 
@@ -111,12 +112,12 @@ full_game(#{two := QuizId}) ->
         expect_event(P2, round_closed, #{round => 2}, 3000),
 
     ?assertEqual({ok, ok}, req(H, {end_game, Pin})),
-    #{final_leaderboard := [{"p1", 950}, {"p2", 0}]} =
+    #{final_leaderboard := [{"p1", 975}, {"p2", 0}]} =
         expect_event(P1, game_finished),
     wait_until(fun() -> not room_listed(Pin) end),
     ?assertEqual({error, room_not_found}, req(H, {next_round, Pin})),
 
-    [#{rank := 1, score := 950}] =
+    [#{rank := 1, score := 975}] =
         [E || #{quiz_title := "Quiz di prova"} = E
                   <- quizarena_db:get_history("p1")],
     stop_all([H, P1, P2]).
@@ -242,7 +243,20 @@ late_answer_within_grace(#{short := QuizId}) ->
     expect_event(P1, round_started),
     timer:sleep(1200),
     ?assertEqual({ok, ok}, req(P1, {answer, Pin, 1, "a", 950, 300})),
-    #{leaderboard := [{"p1", 50}], suspicious := []} =
+    #{leaderboard := [{"p1", 525}], suspicious := []} =
+        expect_event(P1, round_closed),
+    ?assertEqual({ok, ok}, req(H, {cancel_room, Pin})),
+    stop_all([H, P1]).
+
+%% Nel margine arriva una risposta che il client dichiara istantanea ma che
+%% per il server e' oltre la scadenza: e' sospetta e non vale punti.
+answer_after_deadline_scores_zero(#{short := QuizId}) ->
+    {H, Pin, [P1]} = started_game(QuizId, ["p1"]),
+    ?assertEqual({ok, ok}, req(H, {next_round, Pin})),
+    expect_event(P1, round_started),
+    timer:sleep(1200),
+    ?assertEqual({ok, ok}, req(P1, {answer, Pin, 1, "a", 0, 40})),
+    #{leaderboard := [{"p1", 0}], suspicious := ["p1"]} =
         expect_event(P1, round_closed),
     ?assertEqual({ok, ok}, req(H, {cancel_room, Pin})),
     stop_all([H, P1]).
@@ -259,7 +273,7 @@ suspicious_time_is_flagged(#{two := QuizId}) ->
     #{suspicious := ["p1"], leaderboard := Leaderboard} =
         expect_event(H, round_closed),
     {"p1", Score1} = lists:keyfind("p1", 1, Leaderboard),
-    ?assert(Score1 < 1000),
+    ?assert(Score1 < 1000 andalso Score1 >= 500),
     ?assertEqual({ok, ok}, req(H, {cancel_room, Pin})),
     stop_all([H, P1, P2]).
 

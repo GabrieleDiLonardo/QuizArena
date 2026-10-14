@@ -113,7 +113,7 @@ room_survives_node_crash(#{names := [N1, N2, N3]} = Ctx) ->
     %% Gli eventi continuano ad arrivare ai client e la numerazione prosegue.
     {ok, ok} = Req(p2, N1, {answer, Pin, 1, "b", 700, 40}),
     wait_until(fun() -> has_event(N1, p1, round_closed) end),
-    #{leaderboard := [{"p1", 938}, {"p2", 0}]} = last_event(N1, p1, round_closed),
+    #{leaderboard := [{"p1", 969}, {"p2", 0}]} = last_event(N1, p1, round_closed),
     ?assert(has_event(N1, p1, room_recovered)),
     Seqs = [maps:get(seq, E) || E <- call(N1, quizarena_test_client, events, [p1])],
     ?assertEqual(lists:usort(Seqs), Seqs),
@@ -122,7 +122,7 @@ room_survives_node_crash(#{names := [N1, N2, N3]} = Ctx) ->
     {ok, ok} = Req(host, N1, {next_round, Pin}),
     {ok, ok} = Req(host, N1, {end_game, Pin}),
     wait_until(fun() -> has_event(N1, p1, game_finished) end),
-    [#{score := 938}] = [E || #{quiz_title := "Quiz cluster"} = E
+    [#{score := 969}] = [E || #{quiz_title := "Quiz cluster"} = E
                                   <- call(N1, quizarena_db, get_history, ["p1"])],
     ?assertEqual([], call(N1, quizarena_db, list_snapshots, [])).
 
