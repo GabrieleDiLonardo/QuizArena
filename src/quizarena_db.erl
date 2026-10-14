@@ -6,6 +6,9 @@
          %% PIN e sessioni
          open_session/3, abort_session/1, mark_session_started/1,
          cancel_session/1, finish_session/2,
+         get_session/1, get_session_questions/1, sweep_orphan_sessions/0,
+         %% Registro stanze attive
+         publish_room/1, unpublish_room/1, list_public_rooms/0,
          %% Storico
          get_history/1,
          %% Quiz CRUD
@@ -64,10 +67,19 @@ init() ->
         [{disc_copies, Nodes},
          {attributes, [key, text, answers, correct, time_limit]}]),
 
+    %% Registro delle stanze attive, letto dalla lobby. Vive solo in RAM:
+    %% ogni riga e' scritta esclusivamente dalla room che la possiede.
+    create_table(open_rooms,
+        [{ram_copies, Nodes},
+         {attributes, [pin, session_id, quiz_title, host, visibility,
+                       status, num_players, num_questions,
+                       current_round, node]}]),
+
     Tables = [users, quizzes, questions, sessions, results,
-              session_pins, session_questions],
+              session_pins, session_questions, open_rooms],
     ok = mnesia:wait_for_tables(Tables, 30000),
     io:format("Mnesia schema ready on ~p~n", [Nodes]),
+    sweep_orphan_sessions(),
     ok.
 
 create_table(Name, Args) ->
@@ -255,6 +267,77 @@ finish_session(SessionId, PlayerResults) when is_list(PlayerResults) ->
         end
     end,
     transaction_result(F).
+
+get_session(SessionId) ->
+    F = fun() ->
+        case mnesia:read(sessions, SessionId) of
+            [{sessions, SessionId, Pin, QuizId, Title, Host, Status,
+              _StartedAt, _FinishedAt}] ->
+                {ok, #{pin => Pin, quiz_id => QuizId, quiz_title => Title,
+                       host => Host, status => Status}};
+            [] ->
+                {error, session_not_found}
+        end
+    end,
+    transaction_result(F).
+
+get_session_questions(SessionId) ->
+    F = fun() ->
+        Rows = mnesia:match_object(
+            {session_questions, {SessionId, '_'}, '_', '_', '_', '_'}),
+        [#{text => Text, answers => Answers, correct => Correct,
+           time_limit => TimeLimit}
+         || {session_questions, {_Id, _N}, Text, Answers, Correct, TimeLimit}
+                <- lists:keysort(2, Rows)]
+    end,
+    case mnesia:transaction(F) of
+        {atomic, Questions} -> {ok, Questions};
+        {aborted, Reason} -> {error, Reason}
+    end.
+
+%% Le sessioni rimaste in waiting/playing senza una room viva sono orfane
+%% (es. riavvio del nodo durante una partita): vengono annullate e il loro
+%% PIN torna libero.
+sweep_orphan_sessions() ->
+    _ = global:sync(),
+    Pattern = {sessions, '_', '_', '_', '_', '_', '_', '_', '_'},
+    Active = [{SessionId, Pin}
+              || {sessions, SessionId, Pin, _Q, _T, _H, Status, _S, _F}
+                     <- mnesia:dirty_match_object(Pattern),
+                 Status =:= waiting orelse Status =:= playing],
+    Orphans = [S || {S, Pin} <- Active,
+                    global:whereis_name({room, Pin}) =:= undefined],
+    lists:foreach(fun cancel_session/1, Orphans),
+    StaleRooms = [Pin || Pin <- mnesia:dirty_all_keys(open_rooms),
+                         global:whereis_name({room, Pin}) =:= undefined],
+    lists:foreach(fun unpublish_room/1, StaleRooms),
+    case Orphans of
+        [] -> ok;
+        _ -> io:format("Cancelled ~p orphan sessions~n", [length(Orphans)])
+    end.
+
+%% ---------- Registro stanze attive ----------
+
+%% Scrittura dirty: ogni riga ha un unico scrittore (la room del PIN),
+%% quindi non servono lock.
+publish_room(#{pin := Pin, session_id := SessionId, quiz_title := Title,
+               host := Host, visibility := Visibility, status := Status,
+               num_players := NumPlayers, num_questions := NumQuestions,
+               current_round := Round}) ->
+    mnesia:dirty_write({open_rooms, Pin, SessionId, Title, Host, Visibility,
+                        Status, NumPlayers, NumQuestions, Round, node()}).
+
+unpublish_room(Pin) ->
+    mnesia:dirty_delete(open_rooms, Pin).
+
+list_public_rooms() ->
+    Rows = mnesia:dirty_match_object(
+        {open_rooms, '_', '_', '_', '_', public, '_', '_', '_', '_', '_'}),
+    {ok, [#{pin => Pin, quiz_title => Title, host => Host,
+            status => Status, num_players => NumPlayers,
+            num_questions => NumQuestions, current_round => Round}
+          || {open_rooms, Pin, _SessionId, Title, Host, _Visibility, Status,
+              NumPlayers, NumQuestions, Round, _Node} <- Rows]}.
 
 delete_session_questions(SessionId) ->
     SessionQuestions = mnesia:match_object(

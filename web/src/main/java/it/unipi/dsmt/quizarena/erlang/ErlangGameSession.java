@@ -17,6 +17,7 @@ import com.ericsson.otp.erlang.OtpErlangExit;
 import com.ericsson.otp.erlang.OtpErlangList;
 import com.ericsson.otp.erlang.OtpErlangLong;
 import com.ericsson.otp.erlang.OtpErlangObject;
+import com.ericsson.otp.erlang.OtpErlangPid;
 import com.ericsson.otp.erlang.OtpErlangRef;
 import com.ericsson.otp.erlang.OtpErlangString;
 import com.ericsson.otp.erlang.OtpErlangTuple;
@@ -32,6 +33,14 @@ public class ErlangGameSession implements AutoCloseable {
         void onEvent(OtpErlangObject event);
 
         void onFailure(IOException exception);
+
+        // Un processo Erlang linkato alla mailbox (la room) e' terminato.
+        // Il motivo "normal" indica una chiusura regolare della partita.
+        default void onLinkExit(
+                OtpErlangPid pid,
+                OtpErlangObject reason
+        ) {
+        }
     }
 
     private static final OtpErlangAtom EVENT = new OtpErlangAtom("event");
@@ -169,7 +178,10 @@ public class ErlangGameSession implements AutoCloseable {
         decodeOkResult(result);
     }
 
-    public void disconnectPlayer(String pin) {
+    // Notifica alla room che questo client (host o giocatore) lascia la
+    // stanza. E' un'ottimizzazione: la chiusura della mailbox viene
+    // comunque segnalata alla room tramite il link.
+    public void disconnect(String pin) {
         requireText(pin, "pin");
         if (!open.get()) {
             return;
@@ -229,6 +241,35 @@ public class ErlangGameSession implements AutoCloseable {
         }
         if (!new OtpErlangAtom("ok").equals(tuple.elementAt(0))) {
             throw new IOException("Unknown player state result");
+        }
+        return ErlangTermConverter.toJavaValue(tuple.elementAt(1));
+    }
+
+    public Object hostRejoin(
+            String pin,
+            String username,
+            long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        requireText(username, "username");
+        OtpErlangTuple request = new OtpErlangTuple(
+                new OtpErlangObject[] {
+                    new OtpErlangAtom("host_rejoin"),
+                    new OtpErlangString(pin),
+                    new OtpErlangString(username)
+                }
+        );
+        OtpErlangObject result = sendRequest(request, timeoutMillis);
+        if (!(result instanceof OtpErlangTuple tuple)
+                || tuple.arity() != 2) {
+            throw new IOException("Malformed host state result");
+        }
+        if (new OtpErlangAtom("error").equals(tuple.elementAt(0))) {
+            throw new ErlangServiceException(
+                    tuple.elementAt(1).toString());
+        }
+        if (!new OtpErlangAtom("ok").equals(tuple.elementAt(0))) {
+            throw new IOException("Unknown host state result");
         }
         return ErlangTermConverter.toJavaValue(tuple.elementAt(1));
     }
@@ -362,12 +403,21 @@ public class ErlangGameSession implements AutoCloseable {
     private void receiveLoop() {
         try {
             while (open.get()) {
-                OtpErlangObject message = mailbox.receive(1000);
-                if (message != null) {
-                    dispatch(message);
+                try {
+                    OtpErlangObject message = mailbox.receive(1000);
+                    if (message != null) {
+                        dispatch(message);
+                    }
+                } catch (OtpErlangExit exit) {
+                    // Segnale di uscita dalla room linkata: la mailbox resta
+                    // utilizzabile, quindi la ricezione prosegue.
+                    if (!open.get()) {
+                        return;
+                    }
+                    listener.onLinkExit(exit.pid(), exit.reason());
                 }
             }
-        } catch (OtpErlangExit | OtpErlangDecodeException exception) {
+        } catch (OtpErlangDecodeException exception) {
             fail(new IOException(
                     "Unable to receive from the Erlang game mailbox",
                     exception

@@ -1,7 +1,7 @@
 -module(room_gen_server).
 -behaviour(gen_server).
 
--export([start_link/4, join/3, rejoin/3, disconnect/2,
+-export([start_link/1, join/3, rejoin/3, host_rejoin/3, disconnect/2,
          start_game/2, next_round/2, answer/6, cancel/2, end_game/2,
          get_state/1, get_player_state/2, get_events_since/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -11,7 +11,14 @@
 -define(MAX_EVENT_LOG, 200).
 -define(ANSWER_TIME_TOLERANCE_MS, 1000).
 -define(MAX_ACCEPTED_RTT_MS, 2000).
+%% Tempo concesso all'host per riconnettersi prima di chiudere la stanza
+%% (sovrascrivibile con la variabile d'ambiente host_grace_ms).
+-define(DEFAULT_HOST_GRACE_MS, 30000).
 
+%% I client sono mailbox Jinterface: Jinterface non supporta i monitor
+%% (la chiusura di una singola mailbox non genera DOWN), mentre propaga
+%% correttamente i link. Per questo la room fa trap_exit e si linka a
+%% host e giocatori: la chiusura di una mailbox arriva come 'EXIT'.
 -record(player, {
     username,
     pid,
@@ -19,14 +26,13 @@
     answered = false,
     answer_time,
     chosen_answer,
-    connected = true,
-    monitor_ref = undefined
+    connected = true
 }).
 
 %% ---------- API pubblica ----------
 
-start_link(Pin, SessionId, HostPid, Visibility) ->
-    gen_server:start_link(?MODULE, [Pin, SessionId, HostPid, Visibility], []).
+start_link(Args) when is_map(Args) ->
+    gen_server:start_link(?MODULE, Args, []).
 
 join(Pin, Username, PlayerPid) ->
     gen_server:call(via(Pin), {join, Username, PlayerPid}).
@@ -34,8 +40,11 @@ join(Pin, Username, PlayerPid) ->
 rejoin(Pin, Username, NewPid) ->
     gen_server:call(via(Pin), {rejoin, Username, NewPid}).
 
-disconnect(Pin, PlayerPid) ->
-    gen_server:call(via(Pin), {disconnect, PlayerPid}).
+host_rejoin(Pin, Username, NewPid) ->
+    gen_server:call(via(Pin), {host_rejoin, Username, NewPid}).
+
+disconnect(Pin, ClientPid) ->
+    gen_server:call(via(Pin), {disconnect, ClientPid}).
 
 start_game(Pin, RequesterPid) ->
     gen_server:call(via(Pin), {start_game, RequesterPid}).
@@ -68,44 +77,65 @@ via(Pin) ->
 
 %% ---------- Callback gen_server ----------
 
-init([Pin, SessionId, HostPid, Visibility]) ->
+init(#{pin := Pin} = Args) ->
+    process_flag(trap_exit, true),
     case global:register_name({room, Pin}, self()) of
-        yes -> init_registered_room(Pin, SessionId, HostPid, Visibility);
+        yes -> init_registered_room(Args);
         no  -> {stop, {room_already_registered, Pin}}
     end.
 
-init_registered_room(Pin, SessionId, HostPid, Visibility) ->
-    Questions = load_session_questions(SessionId),
-    HostMonitorRef = erlang:monitor(process, HostPid),
-    io:format("[room ~s] avviato (host=~p, visibility=~p, ~p domande)~n",
-              [Pin, HostPid, Visibility, length(Questions)]),
-    {ok, #{
-        pin => Pin,
-        session_id => SessionId,
-        host_pid => HostPid,
-        visibility => Visibility,
-        host_monitor_ref => HostMonitorRef,
-        quiz_questions => Questions,
-        players => #{},
-        status => waiting,
-        current_round => 0,
-        question => undefined,
-        round_start_time => undefined,
-        round_deadline => undefined,
-        timer_ref => undefined,
-        seq => 0,
-        event_log => []
-    }}.
+init_registered_room(#{pin := Pin, session_id := SessionId,
+                       host_username := HostUsername, host_pid := HostPid,
+                       visibility := Visibility}) ->
+    case {quizarena_db:get_session(SessionId),
+          quizarena_db:get_session_questions(SessionId)} of
+        {{ok, #{quiz_title := Title}}, {ok, [_ | _] = Questions}} ->
+            link(HostPid),
+            io:format("[room ~s] avviato (host=~s, visibility=~p, "
+                      "~p domande)~n",
+                      [Pin, HostUsername, Visibility, length(Questions)]),
+            State = #{
+                pin => Pin,
+                session_id => SessionId,
+                quiz_title => Title,
+                host_username => HostUsername,
+                host_pid => HostPid,
+                host_connected => true,
+                host_grace_ref => undefined,
+                visibility => Visibility,
+                quiz_questions => Questions,
+                players => #{},
+                status => waiting,
+                current_round => 0,
+                question => undefined,
+                round_start_time => undefined,
+                round_deadline => undefined,
+                timer_ref => undefined,
+                seq => 0,
+                event_log => []
+            },
+            publish(State),
+            {ok, State};
+        {{ok, _Session}, {ok, []}} ->
+            {stop, no_questions};
+        {{error, Reason}, _} ->
+            {stop, {session_load_failed, Reason}};
+        {_, {error, Reason}} ->
+            {stop, {session_load_failed, Reason}}
+    end.
 
 handle_call({join, Username, PlayerPid}, _From, State)
   when is_list(Username), Username =/= [], is_pid(PlayerPid) ->
     Players = maps:get(players, State),
-    case maps:get(Username, Players, undefined) of
-        #player{connected = false} = Player ->
+    case {Username =:= maps:get(host_username, State),
+          maps:get(Username, Players, undefined)} of
+        {true, _} ->
+            {reply, {error, host_cannot_play}, State};
+        {false, #player{connected = false} = Player} ->
             reattach_player(Username, Player, PlayerPid, State);
-        #player{} ->
+        {false, #player{}} ->
             {reply, {error, already_joined}, State};
-        undefined ->
+        {false, undefined} ->
             join_new_player(Username, PlayerPid, State)
     end;
 
@@ -115,28 +145,41 @@ handle_call({join, _Username, _PlayerPid}, _From, State) ->
 handle_call({rejoin, Username, NewPid}, _From, State)
   when is_list(Username), Username =/= [], is_pid(NewPid) ->
     Players = maps:get(players, State),
-    case maps:get(Username, Players, undefined) of
-        undefined ->
+    case {maps:get(Username, Players, undefined), maps:get(status, State)} of
+        {undefined, waiting} ->
+            %% In attesa chi esce viene rimosso: rientrare equivale a
+            %% un nuovo ingresso.
+            handle_call({join, Username, NewPid}, undefined, State);
+        {undefined, _Status} ->
             {reply, {error, player_not_found}, State};
-        Player ->
+        {Player, _Status} ->
             reattach_player(Username, Player, NewPid, State)
     end;
 
 handle_call({rejoin, _Username, _NewPid}, _From, State) ->
     {reply, {error, invalid_request}, State};
 
-handle_call({disconnect, PlayerPid}, _From, State)
-  when is_pid(PlayerPid) ->
-    Players = maps:get(players, State),
-    case find_player_by_pid(PlayerPid, Players) of
-        {ok, Username, Player} ->
-            NewState = mark_player_disconnected(Username, Player, State),
-            {reply, ok, NewState};
-        not_found ->
-            {reply, ok, State}
+handle_call({host_rejoin, Username, NewPid}, _From, State)
+  when is_list(Username), is_pid(NewPid) ->
+    case Username =:= maps:get(host_username, State) of
+        true ->
+            NewState = reattach_host(NewPid, State),
+            {reply, {ok, host_state_for(NewState)}, NewState};
+        false ->
+            {reply, {error, not_host}, State}
     end;
 
-handle_call({disconnect, _PlayerPid}, _From, State) ->
+handle_call({host_rejoin, _Username, _NewPid}, _From, State) ->
+    {reply, {error, invalid_request}, State};
+
+handle_call({disconnect, ClientPid}, _From, State)
+  when is_pid(ClientPid) ->
+    case client_down(ClientPid, State) of
+        {ok, NewState} -> {reply, ok, NewState};
+        {stop, NewState} -> {stop, normal, ok, NewState}
+    end;
+
+handle_call({disconnect, _ClientPid}, _From, State) ->
     {reply, {error, invalid_request}, State};
 
 handle_call({get_events_since, SinceSeq}, _From, State) ->
@@ -239,18 +282,7 @@ handle_call({answer, _PlayerPid, _Round, _Answer,
 handle_call({cancel, From}, _From, State) ->
     case authorize_host(From, State) of
         ok ->
-            case maps:get(status, State) of
-                waiting ->
-                    {stop, normal, ok, cancel_game_state(State, host_left)};
-                playing ->
-                    {stop, normal, ok, cancel_game_state(State, host_left)};
-                round_open ->
-                    {stop, normal, ok, cancel_game_state(State, host_left)};
-                round_closed ->
-                    {stop, normal, ok, cancel_game_state(State, host_left)};
-                Status ->
-                    {reply, {error, {invalid_state, Status}}, State}
-            end;
+            {stop, normal, ok, cancel_game_state(State, host_left)};
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end;
@@ -259,11 +291,13 @@ handle_call({end_game, From}, _From, State) ->
     case authorize_host(From, State) of
         ok ->
             case maps:get(status, State) of
-                playing -> finish_game(State);
-                round_open -> finish_game(State);
-                round_closed -> finish_game(State);
-                Status ->
-                    {reply, {error, {invalid_state, Status}}, State}
+                waiting ->
+                    {reply, {error, {invalid_state, waiting}}, State};
+                _ ->
+                    case finish_game(State) of
+                        {ok, NewState} -> {stop, normal, ok, NewState};
+                        {error, Reason} -> {reply, {error, Reason}, State}
+                    end
             end;
         {error, Reason} ->
             {reply, {error, Reason}, State}
@@ -274,13 +308,11 @@ handle_call(get_state, _From, State) ->
 
 handle_cast(_Msg, State) -> {noreply, State}.
 
-%% --- Gestione disconnessione (monitor DOWN) ---
-handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State) ->
-    case MonitorRef =:= maps:get(host_monitor_ref, State) of
-        true ->
-            cancel_after_host_disconnect(State);
-        false ->
-            handle_player_disconnect(MonitorRef, State)
+%% --- Mailbox Java chiusa (link) ---
+handle_info({'EXIT', Pid, _Reason}, State) ->
+    case client_down(Pid, State) of
+        {ok, NewState} -> {noreply, NewState};
+        {stop, NewState} -> {stop, normal, NewState}
     end;
 
 handle_info({round_timeout, Round}, State) ->
@@ -297,41 +329,105 @@ handle_info({round_timeout, Round}, State) ->
         _ -> {noreply, State}
     end;
 
+handle_info({host_grace_expired, Ref}, State) ->
+    case {maps:get(host_connected, State), maps:get(host_grace_ref, State)} of
+        {false, Ref} ->
+            host_gone(State);
+        _ ->
+            {noreply, State}
+    end;
+
 handle_info(_Info, State) -> {noreply, State}.
 
-terminate(_Reason, _State) -> ok.
+terminate(_Reason, State) ->
+    quizarena_db:unpublish_room(maps:get(pin, State)),
+    ok.
 
-%% ---------- Funzioni interne ----------
+%% ---------- Disconnessioni ----------
 
-handle_player_disconnect(MonitorRef, State) ->
-    Players = maps:get(players, State),
-    case find_player_by_monitor(MonitorRef, Players) of
-        {ok, Username, Player} ->
-            {noreply, mark_player_disconnected(Username, Player, State)};
-        not_found ->
-            {noreply, State}
+%% Un client (host o giocatore) non e' piu' raggiungibile, per chiusura
+%% esplicita o per 'EXIT' del link.
+client_down(Pid, State) ->
+    case maps:get(host_connected, State)
+         andalso Pid =:= maps:get(host_pid, State) of
+        true ->
+            {ok, host_disconnected(State)};
+        false ->
+            case find_player_by_pid(Pid, maps:get(players, State)) of
+                {ok, Username, Player} ->
+                    {ok, mark_player_disconnected(Username, Player, State)};
+                not_found ->
+                    {ok, State}
+            end
     end.
+
+%% L'host non uccide subito la partita: ha un periodo di grazia per rientrare.
+%% Intanto il round in corso prosegue e si chiude normalmente.
+host_disconnected(State) ->
+    safe_unlink(maps:get(host_pid, State)),
+    GraceMs = application:get_env(quizarena, host_grace_ms,
+                                  ?DEFAULT_HOST_GRACE_MS),
+    Ref = make_ref(),
+    erlang:send_after(GraceMs, self(), {host_grace_expired, Ref}),
+    io:format("[room ~s] host disconnected, grace ~p ms~n",
+              [maps:get(pin, State), GraceMs]),
+    emit_event(State#{host_connected => false, host_grace_ref => Ref}, #{
+        type => host_disconnected,
+        grace_ms => GraceMs
+    }).
+
+%% Scaduto il periodo di grazia: se tutte le domande sono state giocate i
+%% risultati vengono salvati, altrimenti la partita e' annullata.
+host_gone(State) ->
+    case all_rounds_played(State) andalso finish_game(State) of
+        {ok, NewState} ->
+            {stop, normal, NewState};
+        _ ->
+            {stop, normal, cancel_game_state(State, host_disconnected)}
+    end.
+
+reattach_host(NewPid, State) ->
+    case maps:get(host_connected, State) of
+        true -> safe_unlink(maps:get(host_pid, State));
+        false -> ok
+    end,
+    link(NewPid),
+    io:format("[room ~s] host rejoined with pid ~p~n",
+              [maps:get(pin, State), NewPid]),
+    emit_event(State#{host_pid => NewPid, host_connected => true,
+                      host_grace_ref => undefined},
+               #{type => host_rejoined}).
 
 mark_player_disconnected(Username, Player, State) ->
-    case Player#player.monitor_ref of
-        undefined -> ok;
-        MonitorRef -> _ = erlang:demonitor(MonitorRef, [flush]), ok
-    end,
+    safe_unlink(Player#player.pid),
     Players = maps:get(players, State),
-    UpdatedPlayer = Player#player{pid = undefined, connected = false,
-                                  monitor_ref = undefined},
-    NewPlayers = maps:put(Username, UpdatedPlayer, Players),
-    State1 = State#{players => NewPlayers},
+    NewPlayers = case maps:get(status, State) of
+        waiting ->
+            maps:remove(Username, Players);
+        _ ->
+            maps:put(Username,
+                     Player#player{pid = undefined, connected = false},
+                     Players)
+    end,
     io:format("[room ~s] player ~s disconnected~n",
               [maps:get(pin, State), Username]),
-    State2 = emit_event(State1, #{
+    State1 = emit_event(State#{players => NewPlayers}, #{
         type => player_disconnected,
-        username => Player#player.username
+        username => Username
     }),
-    case maps:get(status, State2) of
-        round_open -> maybe_close_round(State2);
-        _ -> State2
+    case maps:get(status, State1) of
+        round_open -> maybe_close_round(State1);
+        _ -> State1
     end.
+
+safe_unlink(Pid) when is_pid(Pid) ->
+    unlink(Pid),
+    %% Scarta un eventuale 'EXIT' gia' arrivato dal vecchio link.
+    receive {'EXIT', Pid, _} -> ok after 0 -> ok end;
+safe_unlink(_) ->
+    ok.
+
+%% ---------- Stato per il rientro ----------
 
 player_state_for(Username, State) ->
     Players = maps:get(players, State),
@@ -346,10 +442,27 @@ player_state_for(Username, State) ->
                 username => Player#player.username,
                 answered => Player#player.answered,
                 score => Player#player.score,
+                host_connected => maps:get(host_connected, State),
                 seq => maps:get(seq, State)
             },
             {ok, add_round_state(Status, State, Players, Base)}
     end.
+
+host_state_for(State) ->
+    Status = maps:get(status, State),
+    Players = maps:get(players, State),
+    Base = #{
+        pin => maps:get(pin, State),
+        visibility => maps:get(visibility, State),
+        quiz_title => maps:get(quiz_title, State),
+        status => Status,
+        current_round => maps:get(current_round, State),
+        total_rounds => length(maps:get(quiz_questions, State)),
+        players => [U || {U, #player{connected = true}}
+                             <- maps:to_list(Players)],
+        seq => maps:get(seq, State)
+    },
+    add_round_state(Status, State, Players, Base).
 
 add_round_state(round_open, State, _Players, Base) ->
     Question = maps:get(question, State),
@@ -364,13 +477,13 @@ add_round_state(round_closed, State, Players, Base) ->
     Question = maps:get(question, State),
     Base#{
         correct => maps:get(correct, Question),
-        leaderboard => build_leaderboard(Players)
+        leaderboard => build_leaderboard(Players),
+        has_next_round => not all_rounds_played(State)
     };
 add_round_state(_Status, _State, _Players, Base) ->
     Base.
 
-cancel_after_host_disconnect(State) ->
-    {stop, normal, cancel_game_state(State, host_disconnected)}.
+%% ---------- Ciclo di vita della partita ----------
 
 cancel_game_state(State, Reason) ->
     State1 = cancel_timer(State),
@@ -393,10 +506,7 @@ cancel_game_state(State, Reason) ->
 start_game_if_allowed(State) ->
     case maps:get(status, State) of
         waiting ->
-            Players = maps:values(maps:get(players, State)),
-            ConnectedPlayers = [P || P <- Players,
-                                      P#player.connected =:= true],
-            case ConnectedPlayers of
+            case connected_players(State) of
                 [] ->
                     {reply, {error, no_players}, State};
                 _ ->
@@ -478,6 +588,8 @@ open_next_round(State) ->
             {reply, {error, no_more_questions}, State1}
     end.
 
+%% Salva i risultati e notifica la classifica finale.
+%% Restituisce {ok, NuovoStato} oppure {error, Motivo}.
 finish_game(State) ->
     Pin = maps:get(pin, State),
     SessionId = maps:get(session_id, State),
@@ -496,21 +608,21 @@ finish_game(State) ->
                 final_leaderboard => Leaderboard
             }),
             io:format("[room ~s] game finished~n", [Pin]),
-            {stop, normal, ok, NewState};
+            {ok, NewState};
         {error, Reason} ->
-            {reply, {error, {session_finish_failed, Reason}}, State}
+            {error, {session_finish_failed, Reason}}
     end.
 
-find_player_by_monitor(_MonitorRef, Players) when map_size(Players) =:= 0 ->
-    not_found;
-find_player_by_monitor(MonitorRef, Players) ->
-    maps:fold(
-        fun(Username, #player{monitor_ref = Ref} = P, Acc) ->
-            case {Acc, Ref} of
-                {not_found, MonitorRef} -> {ok, Username, P};
-                _ -> Acc
-            end
-        end, not_found, Players).
+all_rounds_played(State) ->
+    maps:get(status, State) =:= round_closed
+        andalso maps:get(current_round, State)
+                =:= length(maps:get(quiz_questions, State)).
+
+%% ---------- Giocatori ----------
+
+connected_players(State) ->
+    [P || P <- maps:values(maps:get(players, State)),
+          P#player.connected =:= true].
 
 find_player_by_pid(PlayerPid, Players) ->
     maps:fold(
@@ -525,11 +637,10 @@ join_new_player(Username, PlayerPid, State) ->
     case maps:get(status, State) of
         waiting ->
             Players = maps:get(players, State),
-            MonitorRef = erlang:monitor(process, PlayerPid),
+            link(PlayerPid),
             Player = #player{username = Username,
                              pid = PlayerPid,
-                             connected = true,
-                             monitor_ref = MonitorRef},
+                             connected = true},
             NewPlayers = maps:put(Username, Player, Players),
             State1 = State#{players => NewPlayers},
             NewState = emit_event(State1, #{
@@ -544,14 +655,9 @@ join_new_player(Username, PlayerPid, State) ->
     end.
 
 reattach_player(Username, Player, NewPid, State) ->
-    case Player#player.monitor_ref of
-        undefined -> ok;
-        OldRef -> _ = erlang:demonitor(OldRef, [flush]), ok
-    end,
-    NewRef = erlang:monitor(process, NewPid),
-    UpdatedPlayer = Player#player{pid = NewPid,
-                                  connected = true,
-                                  monitor_ref = NewRef},
+    safe_unlink(Player#player.pid),
+    link(NewPid),
+    UpdatedPlayer = Player#player{pid = NewPid, connected = true},
     Players = maps:get(players, State),
     NewPlayers = maps:put(Username, UpdatedPlayer, Players),
     State1 = State#{players => NewPlayers},
@@ -563,57 +669,63 @@ reattach_player(Username, Player, NewPid, State) ->
               [maps:get(pin, State), Username, NewPid]),
     {reply, ok, NewState}.
 
-load_session_questions(SessionId) ->
-    F = fun() ->
-        All = mnesia:foldl(
-            fun({session_questions, {Id, N}, Text, Ans, Corr, TL}, Acc) ->
-                case Id =:= SessionId of
-                    true -> [{N, #{text => Text, answers => Ans,
-                                   correct => Corr, time_limit => TL}} | Acc];
-                    false -> Acc
-                end
-            end, [], session_questions),
-        lists:keysort(1, All)
-    end,
-    {atomic, Sorted} = mnesia:transaction(F),
-    [Q || {_N, Q} <- Sorted].
-
 authorize_host(From, State) ->
-    HostPid = maps:get(host_pid, State),
-    case From =:= HostPid of
+    case maps:get(host_connected, State)
+         andalso From =:= maps:get(host_pid, State) of
         true -> ok;
         false -> {error, not_host}
     end.
 
+%% ---------- Eventi ----------
+
+%% Ogni evento riceve un numero di sequenza crescente: la room e' l'unico
+%% sequencer della partita. Ogni cambio di stato passa da qui, quindi qui
+%% si aggiorna anche il registro delle stanze letto dalla lobby.
 emit_event(State, Event) ->
     NewSeq = maps:get(seq, State) + 1,
     Event1 = Event#{seq => NewSeq},
-    broadcast(State, Event1),
     OldLog = maps:get(event_log, State, []),
     NewLog = [{NewSeq, Event1} | OldLog],
     TrimmedLog = lists:sublist(NewLog, ?MAX_EVENT_LOG),
-    State#{seq => NewSeq, event_log => TrimmedLog}.
+    NewState = State#{seq => NewSeq, event_log => TrimmedLog},
+    %% Prima il registro, poi i client: chi reagisce all'evento leggendo
+    %% la lobby trova gia' lo stato aggiornato.
+    publish(NewState),
+    broadcast(NewState, Event1),
+    NewState.
 
 broadcast(State, Event) ->
-    HostPid = maps:get(host_pid, State),
-    HostPid ! {event, Event},
-    Players = maps:get(players, State),
-    maps:foreach(fun(_Username,
-                     #player{pid = Pid, connected = Connected}) ->
-        case Connected andalso Pid =/= HostPid of
+    case maps:get(host_connected, State) of
+        true -> maps:get(host_pid, State) ! {event, Event};
+        false -> ok
+    end,
+    maps:foreach(fun(_Username, #player{pid = Pid, connected = Connected}) ->
+        case Connected of
             true -> Pid ! {event, Event};
             false -> ok
         end
-    end, Players).
+    end, maps:get(players, State)).
+
+publish(State) ->
+    quizarena_db:publish_room(#{
+        pin => maps:get(pin, State),
+        session_id => maps:get(session_id, State),
+        quiz_title => maps:get(quiz_title, State),
+        host => maps:get(host_username, State),
+        visibility => maps:get(visibility, State),
+        status => maps:get(status, State),
+        num_players => length(connected_players(State)),
+        num_questions => length(maps:get(quiz_questions, State)),
+        current_round => maps:get(current_round, State)
+    }).
+
+%% ---------- Round ----------
 
 maybe_close_round(State) ->
-    Players = maps:get(players, State),
-    ConnectedPlayers = [P || P <- maps:values(Players),
-                             P#player.connected =:= true],
-    case ConnectedPlayers of
+    case connected_players(State) of
         [] ->
             State;
-        _ ->
+        ConnectedPlayers ->
             AllAnswered = lists:all(
                 fun(#player{answered = A}) -> A end,
                 ConnectedPlayers

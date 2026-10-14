@@ -6,6 +6,12 @@
 
 -define(PIN_GENERATION_ATTEMPTS, 20).
 
+%% Punto di ingresso dei nodi Java. Il gateway non esegue le richieste:
+%% per ognuna avvia un processo dedicato, cosi' una room lenta o una
+%% transazione Mnesia non bloccano le richieste degli altri utenti.
+%% L'identita' del client resta il pid della sua mailbox Java (JavaPid),
+%% che viene passato esplicitamente alle room.
+
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -18,207 +24,101 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Request, State) ->
     {noreply, State}.
 
-%% ---------- Ping ----------
-handle_info({JavaPid, Ref, ping}, State)
+handle_info({JavaPid, Ref, Request}, State)
   when is_pid(JavaPid), is_reference(Ref) ->
-    JavaPid ! {Ref, {ok, pong}},
-    {noreply, State};
-
-%% ---------- Autenticazione ----------
-handle_info({JavaPid, Ref, {register_user, Username, Password}}, State)
-  when is_pid(JavaPid), is_reference(Ref) ->
-    reply_async(JavaPid, Ref,
-        fun() -> quizarena_auth:register(Username, Password) end),
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {authenticate_user, Username, Password}}, State)
-  when is_pid(JavaPid), is_reference(Ref) ->
-    reply_async(JavaPid, Ref,
-        fun() -> quizarena_auth:authenticate(Username, Password) end),
-    {noreply, State};
-
-%% ---------- Quiz ----------
-handle_info({JavaPid, Ref, {list_owned_quizzes, Owner}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Owner) ->
-    Result = safe_call(fun() ->
-        quizarena_db:list_quizzes_by_owner(Owner)
+    _ = spawn(fun() ->
+        JavaPid ! {Ref, safe_call(fun() -> handle_request(Request, JavaPid) end)}
     end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {list_browsable_quizzes, Username}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Username) ->
-    Result = safe_call(fun() ->
-        quizarena_db:list_browsable_quizzes(Username)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {get_owned_quiz, Owner, QuizId}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Owner),
-       is_tuple(QuizId) ->
-    Result = safe_call(fun() ->
-        quizarena_db:get_quiz(Owner, QuizId)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {create_quiz, Owner, Quiz}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Owner), is_map(Quiz) ->
-    Result = safe_call(fun() ->
-        quizarena_db:create_quiz(Owner, Quiz)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {update_quiz, Owner, QuizId, Quiz}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Owner),
-       is_tuple(QuizId), is_map(Quiz) ->
-    Result = safe_call(fun() ->
-        quizarena_db:update_quiz(Owner, QuizId, Quiz)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {delete_quiz, Owner, QuizId}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Owner),
-       is_tuple(QuizId) ->
-    Result = safe_call(fun() ->
-        quizarena_db:delete_quiz(Owner, QuizId)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {get_history, User}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(User) ->
-    Result = case quizarena_db:get_history(User) of
-        {error, Reason} -> {error, Reason};
-        History when is_list(History) -> {ok, History}
-    end,
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-%% ---------- Stanze ----------
-handle_info({JavaPid, Ref, {create_room, QuizId, HostUsername, Visibility}},
-            State)
-  when is_pid(JavaPid), is_reference(Ref), is_tuple(QuizId),
-       is_list(HostUsername),
-       (Visibility =:= public orelse Visibility =:= private) ->
-    Result = create_room(QuizId, HostUsername, JavaPid, Visibility),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {create_room, QuizId, HostUsername}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_tuple(QuizId),
-       is_list(HostUsername) ->
-    Result = create_room(QuizId, HostUsername, JavaPid, public),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {cancel_room, Pin}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
-    Result = safe_call(fun() ->
-        room_gen_server:cancel(Pin, JavaPid)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, list_rooms}, State)
-  when is_pid(JavaPid), is_reference(Ref) ->
-    JavaPid ! {Ref, {ok, list_open_rooms()}},
-    {noreply, State};
-
-%% ---------- Gioco ----------
-handle_info({JavaPid, Ref, {join, Pin, Username}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin),
-       is_list(Username) ->
-    Result = safe_call(fun() ->
-        room_gen_server:join(Pin, Username, JavaPid)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {rejoin, Pin, Username}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin), is_list(Username) ->
-    Result = safe_call(fun() ->
-        room_gen_server:rejoin(Pin, Username, JavaPid)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {disconnect, Pin}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
-    Result = safe_call(fun() ->
-        room_gen_server:disconnect(Pin, JavaPid)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {start_game, Pin}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
-    Result = safe_call(fun() -> room_gen_server:start_game(Pin, JavaPid) end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {next_round, Pin}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
-    Result = safe_call(fun() -> room_gen_server:next_round(Pin, JavaPid) end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref,
-             {answer, Pin, Round, Answer, ClientElapsedMs, RttMs}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin),
-       is_integer(Round), is_list(Answer),
-       is_integer(ClientElapsedMs), ClientElapsedMs >= 0,
-       is_integer(RttMs), RttMs >= 0 ->
-    Result = safe_call(fun() ->
-        room_gen_server:answer(Pin, JavaPid, Round, Answer,
-                               ClientElapsedMs, RttMs)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {end_game, Pin}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin) ->
-    Result = safe_call(fun() -> room_gen_server:end_game(Pin, JavaPid) end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {get_events_since, Pin, SinceSeq}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin), is_integer(SinceSeq) ->
-    Result = safe_call(fun() -> room_gen_server:get_events_since(Pin, SinceSeq) end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-handle_info({JavaPid, Ref, {get_player_state, Pin, Username}}, State)
-  when is_pid(JavaPid), is_reference(Ref), is_list(Pin), is_list(Username) ->
-    Result = safe_call(fun() ->
-        room_gen_server:get_player_state(Pin, Username)
-    end),
-    JavaPid ! {Ref, Result},
-    {noreply, State};
-
-%% ---------- Fallback ----------
-handle_info({JavaPid, Ref, _Request}, State)
-  when is_pid(JavaPid), is_reference(Ref) ->
-    JavaPid ! {Ref, {error, unsupported_request}},
     {noreply, State};
 
 handle_info(_Message, State) ->
     {noreply, State}.
 
-%% ---------- Helper ----------
+%% ---------- Richieste ----------
 
-reply_async(JavaPid, Ref, Fun) ->
-    spawn(fun() ->
-        Result = try Fun()
-        catch
-            _Class:_Reason -> {error, internal_error}
-        end,
-        JavaPid ! {Ref, Result}
-    end),
-    ok.
+handle_request(ping, _JavaPid) ->
+    {ok, pong};
+
+%% Autenticazione
+handle_request({register_user, Username, Password}, _JavaPid) ->
+    quizarena_auth:register(Username, Password);
+handle_request({authenticate_user, Username, Password}, _JavaPid) ->
+    quizarena_auth:authenticate(Username, Password);
+
+%% Quiz
+handle_request({list_owned_quizzes, Owner}, _JavaPid)
+  when is_list(Owner) ->
+    quizarena_db:list_quizzes_by_owner(Owner);
+handle_request({list_browsable_quizzes, Username}, _JavaPid)
+  when is_list(Username) ->
+    quizarena_db:list_browsable_quizzes(Username);
+handle_request({get_owned_quiz, Owner, QuizId}, _JavaPid)
+  when is_list(Owner), is_tuple(QuizId) ->
+    quizarena_db:get_quiz(Owner, QuizId);
+handle_request({create_quiz, Owner, Quiz}, _JavaPid)
+  when is_list(Owner), is_map(Quiz) ->
+    quizarena_db:create_quiz(Owner, Quiz);
+handle_request({update_quiz, Owner, QuizId, Quiz}, _JavaPid)
+  when is_list(Owner), is_tuple(QuizId), is_map(Quiz) ->
+    quizarena_db:update_quiz(Owner, QuizId, Quiz);
+handle_request({delete_quiz, Owner, QuizId}, _JavaPid)
+  when is_list(Owner), is_tuple(QuizId) ->
+    quizarena_db:delete_quiz(Owner, QuizId);
+handle_request({get_history, User}, _JavaPid)
+  when is_list(User) ->
+    case quizarena_db:get_history(User) of
+        {error, Reason} -> {error, Reason};
+        History when is_list(History) -> {ok, History}
+    end;
+
+%% Stanze
+handle_request({create_room, QuizId, HostUsername, Visibility}, JavaPid)
+  when is_tuple(QuizId), is_list(HostUsername),
+       (Visibility =:= public orelse Visibility =:= private) ->
+    create_room(QuizId, HostUsername, JavaPid, Visibility);
+handle_request({create_room, QuizId, HostUsername}, JavaPid)
+  when is_tuple(QuizId), is_list(HostUsername) ->
+    create_room(QuizId, HostUsername, JavaPid, public);
+handle_request({cancel_room, Pin}, JavaPid) when is_list(Pin) ->
+    room_gen_server:cancel(Pin, JavaPid);
+handle_request(list_rooms, _JavaPid) ->
+    quizarena_db:list_public_rooms();
+
+%% Gioco
+handle_request({join, Pin, Username}, JavaPid)
+  when is_list(Pin), is_list(Username) ->
+    room_gen_server:join(Pin, Username, JavaPid);
+handle_request({rejoin, Pin, Username}, JavaPid)
+  when is_list(Pin), is_list(Username) ->
+    room_gen_server:rejoin(Pin, Username, JavaPid);
+handle_request({host_rejoin, Pin, Username}, JavaPid)
+  when is_list(Pin), is_list(Username) ->
+    room_gen_server:host_rejoin(Pin, Username, JavaPid);
+handle_request({disconnect, Pin}, JavaPid) when is_list(Pin) ->
+    room_gen_server:disconnect(Pin, JavaPid);
+handle_request({start_game, Pin}, JavaPid) when is_list(Pin) ->
+    room_gen_server:start_game(Pin, JavaPid);
+handle_request({next_round, Pin}, JavaPid) when is_list(Pin) ->
+    room_gen_server:next_round(Pin, JavaPid);
+handle_request({answer, Pin, Round, Answer, ClientElapsedMs, RttMs}, JavaPid)
+  when is_list(Pin), is_integer(Round), is_list(Answer),
+       is_integer(ClientElapsedMs), ClientElapsedMs >= 0,
+       is_integer(RttMs), RttMs >= 0 ->
+    room_gen_server:answer(Pin, JavaPid, Round, Answer,
+                           ClientElapsedMs, RttMs);
+handle_request({end_game, Pin}, JavaPid) when is_list(Pin) ->
+    room_gen_server:end_game(Pin, JavaPid);
+handle_request({get_events_since, Pin, SinceSeq}, _JavaPid)
+  when is_list(Pin), is_integer(SinceSeq) ->
+    room_gen_server:get_events_since(Pin, SinceSeq);
+handle_request({get_player_state, Pin, Username}, _JavaPid)
+  when is_list(Pin), is_list(Username) ->
+    room_gen_server:get_player_state(Pin, Username);
+
+handle_request(_Request, _JavaPid) ->
+    {error, unsupported_request}.
+
+%% ---------- Helper ----------
 
 safe_call(Fun) ->
     try Fun() of
@@ -230,6 +130,7 @@ safe_call(Fun) ->
         exit:{noproc, _} -> {error, room_not_found};
         exit:{timeout, _} -> {error, timeout};
         exit:{nodedown, _} -> {error, node_down};
+        exit:{normal, _} -> {error, room_not_found};
         exit:Reason -> {error, {call_failed, Reason}};
         Class:Reason -> {error, {call_failed, {Class, Reason}}}
     end.
@@ -255,7 +156,10 @@ open_session_and_start_room(Pin, QuizId, HostUsername, HostPid,
                             Visibility, AttemptsLeft) ->
     case quizarena_db:open_session(Pin, QuizId, HostUsername) of
         {ok, SessionId, _QuestionCount} ->
-            case safe_start_room(Pin, SessionId, HostPid, Visibility) of
+            RoomArgs = #{pin => Pin, session_id => SessionId,
+                         host_username => HostUsername, host_pid => HostPid,
+                         visibility => Visibility},
+            case safe_start_room(RoomArgs) of
                 {ok, _RoomPid} ->
                     {ok, Pin};
                 {error, {room_already_registered, Pin}} ->
@@ -271,8 +175,8 @@ open_session_and_start_room(Pin, QuizId, HostUsername, HostPid,
             {error, Reason}
     end.
 
-safe_start_room(Pin, SessionId, HostPid, Visibility) ->
-    try room_sup:start_room(Pin, SessionId, HostPid, Visibility)
+safe_start_room(RoomArgs) ->
+    try room_sup:start_room(RoomArgs)
     catch Class:Reason -> {error, {Class, Reason}} end.
 
 retry_after_rollback(SessionId, QuizId, HostUsername, HostPid, Visibility,
@@ -289,35 +193,6 @@ room_start_error_after_rollback(SessionId, StartReason) ->
         {error, RollbackReason} ->
             {error, {room_start_failed, StartReason,
                      rollback_failed, RollbackReason}}
-    end.
-
-list_open_rooms() ->
-    Names = global:registered_names(),
-    RoomNames = [N || {room, _} = N <- Names],
-    lists:filtermap(fun room_summary/1, RoomNames).
-
-room_summary({room, Pin} = Name) ->
-    case global:whereis_name(Name) of
-        undefined -> false;
-        _Pid ->
-            try room_gen_server:get_state(Pin) of
-                State ->
-                    case maps:get(visibility, State, public) of
-                        public ->
-                            {true, #{
-                                pin => Pin,
-                                status => maps:get(status, State, unknown),
-                                num_players => maps:size(
-                                    maps:get(players, State, #{})),
-                                num_questions => length(
-                                    maps:get(quiz_questions, State, []))
-                            }};
-                        _ ->
-                            false
-                    end
-            catch
-                _:_ -> false
-            end
     end.
 
 generate_pin() ->

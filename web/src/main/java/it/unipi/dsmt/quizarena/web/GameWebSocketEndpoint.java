@@ -11,7 +11,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import com.ericsson.otp.erlang.OtpErlangAtom;
 import com.ericsson.otp.erlang.OtpErlangObject;
+import com.ericsson.otp.erlang.OtpErlangPid;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -122,6 +124,14 @@ public final class GameWebSocketEndpoint extends Endpoint {
                     }
 
                     @Override
+                    public void onLinkExit(
+                            OtpErlangPid pid,
+                            OtpErlangObject reason
+                    ) {
+                        handleRoomExit(reason);
+                    }
+
+                    @Override
                     public void onFailure(IOException exception) {
                         LOGGER.log(
                                 Level.WARNING,
@@ -173,6 +183,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 case "list_rooms" -> handleListRooms();
                 case "join" -> handleJoin(message);
                 case "rejoin" -> handleRejoin(message);
+                case "host_rejoin" -> handleHostRejoin(message);
                 case "start_game" -> handleStartGame();
                 case "next_round" -> handleNextRound();
                 case "answer" -> handleAnswer(message);
@@ -341,6 +352,32 @@ public final class GameWebSocketEndpoint extends Endpoint {
         }
     }
 
+    private void handleHostRejoin(JsonNode message)
+            throws IOException, ErlangServiceException {
+        if (roomPin != null) {
+            sendError("connection_already_associated",
+                    "This connection is already associated with a room");
+            return;
+        }
+        String pin = requiredText(message, "pin");
+        beginStateReplay();
+        try {
+            Object hostState = currentErlangSession().hostRejoin(
+                    pin, authenticatedUsername, ERLANG_TIMEOUT_MILLIS);
+            this.roomPin = pin;
+            this.role = "host";
+            sendJson(Map.of(
+                    "type", "host_rejoined",
+                    "pin", pin,
+                    "state", hostState
+            ));
+            finishStateReplay(sequenceOf(hostState));
+        } catch (IOException | ErlangServiceException exception) {
+            abortStateReplay();
+            throw exception;
+        }
+    }
+
     private void handleStartGame()
             throws IOException, ErlangServiceException {
         if (roomPin == null) {
@@ -410,6 +447,13 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private void sendEvent(OtpErlangObject event) {
         try {
             Object converted = ErlangTermConverter.toJavaValue(event);
+            if (converted instanceof Map<?, ?> map
+                    && ("game_finished".equals(map.get("type"))
+                        || "game_cancelled".equals(map.get("type")))) {
+                // La partita e' conclusa: la connessione puo' entrare in
+                // un'altra stanza senza notificare quella chiusa.
+                clearRoomAssociation();
+            }
             synchronized (stateReplayLock) {
                 if (stateReplayInProgress) {
                     queuedEvents.add(converted);
@@ -549,21 +593,39 @@ public final class GameWebSocketEndpoint extends Endpoint {
         }
     }
 
+    // Chiusura della connessione: la room viene avvisata, ma la partita
+    // prosegue. Un host disconnesso ha un periodo di grazia per rientrare;
+    // l'annullamento avviene solo con l'azione esplicita cancel_room.
     private void releaseRoomAssociation() {
         synchronized (erlangSessionLock) {
             if (roomPin == null) {
                 return;
             }
             if (erlangSession != null) {
-                if ("host".equals(role)) {
-                    erlangSession.cancelRoom(roomPin);
-                } else if ("player".equals(role)) {
-                    erlangSession.disconnectPlayer(roomPin);
-                }
+                erlangSession.disconnect(roomPin);
             }
             roomPin = null;
             role = null;
         }
+    }
+
+    private void clearRoomAssociation() {
+        synchronized (erlangSessionLock) {
+            roomPin = null;
+            role = null;
+        }
+    }
+
+    // Un'uscita "normal" della room segue sempre game_finished o
+    // game_cancelled, gia' inoltrati al client. Qualsiasi altro motivo
+    // indica un crash della room o la perdita del nodo Erlang.
+    private void handleRoomExit(OtpErlangObject reason) {
+        if (new OtpErlangAtom("normal").equals(reason)) {
+            return;
+        }
+        LOGGER.log(Level.WARNING, "Game room terminated: {0}", reason);
+        clearRoomAssociation();
+        sendError("room_failed", "La stanza e' terminata in modo anomalo");
     }
 
     private ErlangGameSession currentErlangSession() throws IOException {

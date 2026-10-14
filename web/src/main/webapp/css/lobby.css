@@ -31,3 +31,10 @@
 .room-meta strong {
     color: #4b3f99;
 }
+
+.room-title {
+    margin-top: 4px;
+    color: #222;
+    font-size: 18px;
+    font-weight: 600;
+}

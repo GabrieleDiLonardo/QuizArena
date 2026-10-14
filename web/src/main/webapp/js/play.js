@@ -94,6 +94,11 @@ function handleEvent(ev) {
         log(`Uscito: ${ev.username}`);
     } else if (ev.type === 'player_rejoined') {
         log(`Rientrato: ${ev.username}`);
+    } else if (ev.type === 'host_disconnected') {
+        showHostNotice('L\'host si è disconnesso: attendi fino a '
+            + Math.round(ev.grace_ms / 1000) + 's che rientri…');
+    } else if (ev.type === 'host_rejoined') {
+        showHostNotice('');
     } else if (ev.type === 'game_started') {
         document.getElementById('step2').style.display = 'none';
         document.getElementById('statusMsg').textContent = 'Partita iniziata!';
@@ -116,6 +121,20 @@ function handleEvent(ev) {
         alert('Partita cancellata: ' +
             (ev.reason || 'motivo sconosciuto'));
     }
+}
+
+// ===== Avvisi sull'host =====
+function showHostNotice(text) {
+    let el = document.getElementById('hostNotice');
+    if (!el) {
+        el = document.createElement('p');
+        el.id = 'hostNotice';
+        el.className = 'host-notice';
+        const anchor = document.getElementById('step1');
+        anchor.parentNode.insertBefore(el, anchor);
+    }
+    el.textContent = text;
+    el.style.display = text ? 'block' : 'none';
 }
 
 // ===== Round =====
@@ -218,6 +237,9 @@ function showFinal(ev) {
 }
 
 function restorePlayerState(state) {
+    if (state && state.host_connected === false) {
+        showHostNotice('L\'host è disconnesso: attendi che rientri…');
+    }
     document.getElementById('step1').style.display = 'none';
     document.getElementById('step2').style.display = 'none';
     document.getElementById('step3').style.display = 'none';

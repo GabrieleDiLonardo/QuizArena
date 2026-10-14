@@ -15,6 +15,17 @@ Progetto per il corso di *Distributed Systems and Middleware Technologies* (AA 2
 ## Stack
 
 Erlang/OTP + Mnesia · Tomcat 10 · Jakarta Servlet 6 · WebSocket · Jinterface · Maven · rebar3
+
+## Test
+
+```
+rebar3 eunit --module=quizarena_room_tests
+```
+
+Gli scenari (partita completa, uscite e rientri di host e giocatori,
+periodo di grazia dell'host, creazione concorrente di stanze, pulizia
+delle sessioni orfane) passano dal gateway come farebbe il web tier e
+usano una directory Mnesia temporanea, senza toccare i dati locali.
  
 
 ## Problemi

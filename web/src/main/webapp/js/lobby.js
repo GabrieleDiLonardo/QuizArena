@@ -41,18 +41,27 @@ function renderRooms(rooms) {
         const canJoin = status === 'waiting';
         return `
             <div class="room-card">
-                <div class="room-pin">${pin}</div>
+                <div class="room-pin">${escapeHtml(pin)}</div>
+                <div class="room-title">${escapeHtml(r.quiz_title || '')}</div>
                 <div class="room-meta">
+                    <span>Host: <strong>${escapeHtml(r.host || '')}</strong></span>
                     <span>Stato: <strong>${status}</strong></span>
                     <span>Giocatori: <strong>${players}</strong></span>
                     <span>Domande: <strong>${questions}</strong></span>
                 </div>
                 ${canJoin
-                    ? `<a class="btn" href="play.html?pin=${pin}">Entra</a>`
+                    ? `<a class="btn" href="play.html?pin=${encodeURIComponent(pin)}">Entra</a>`
                     : `<span class="btn disabled">Partita in corso</span>`}
             </div>
         `;
     }).join('');
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
 }
 
 // Auto-refresh ogni 5 secondi

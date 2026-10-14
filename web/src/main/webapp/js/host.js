@@ -17,6 +17,8 @@ let currentPin = null;
 let players = [];
 let roomVisibility = 'public';
 let cancelPending = false;
+let hostRejoinPending = false;
+const HOST_PIN_KEY = 'qa_host_pin';
 
 // ===== Toggle visibilità stanza =====
 const visibilityToggle = document.getElementById('visibilityToggle');
@@ -66,8 +68,19 @@ function handleMessage(msg) {
     log('← ' + JSON.stringify(msg));
 
     if (msg.type === 'connected') {
+        const savedPin = localStorage.getItem(HOST_PIN_KEY);
+        if (savedPin) {
+            // Pagina ricaricata o connessione persa: riprende la stanza.
+            hostRejoinPending = true;
+            ws.send({action: 'host_rejoin', pin: savedPin});
+        }
         loadMyQuizzes();
         loadBrowsableQuizzes();
+        return;
+    }
+    if (msg.type === 'host_rejoined') {
+        hostRejoinPending = false;
+        restoreHostState(msg.state);
         return;
     }
     if (msg.type === 'quizzes') {
@@ -79,17 +92,16 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'room_created') {
-        currentPin = msg.pin;
-        document.getElementById('step1').style.display = 'none';
-        document.getElementById('step2').style.display = 'block';
-        document.getElementById('pinDisplay').textContent = msg.pin;
-        document.getElementById('visibilityInfo').textContent =
-            msg.visibility === 'private'
-                ? '⚠ Stanza privata — non visibile in lobby'
-                : '✓ Stanza pubblica — visibile in lobby';
+        showWaitingRoom(msg.pin, msg.visibility);
         return;
     }
     if (msg.type === 'error') {
+        if (hostRejoinPending) {
+            // La stanza non esiste piu': si riparte da zero.
+            hostRejoinPending = false;
+            forgetRoom();
+            return;
+        }
         if (cancelPending) {
             cancelPending = false;
             document.querySelectorAll('.cancel-room-btn').forEach(button => {
@@ -103,12 +115,66 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'cancelled') {
+        forgetRoom();
         alert('Stanza annullata.');
         location.reload();
         return;
     }
     if (msg.type === 'event') {
         handleEvent(msg.event);
+    }
+}
+
+// ===== Stanza =====
+function showWaitingRoom(pin, visibility) {
+    currentPin = pin;
+    localStorage.setItem(HOST_PIN_KEY, pin);
+    document.getElementById('step1').style.display = 'none';
+    document.getElementById('step2').style.display = 'block';
+    document.getElementById('pinDisplay').textContent = pin;
+    document.getElementById('visibilityInfo').textContent =
+        visibility === 'private'
+            ? '⚠ Stanza privata — non visibile in lobby'
+            : '✓ Stanza pubblica — visibile in lobby';
+}
+
+function forgetRoom() {
+    currentPin = null;
+    localStorage.removeItem(HOST_PIN_KEY);
+}
+
+function showGameScreen() {
+    document.getElementById('step1').style.display = 'none';
+    document.getElementById('step2').style.display = 'none';
+    document.getElementById('step3').style.display = 'block';
+    document.getElementById('startBtn').disabled = true;
+}
+
+// Ricostruisce la schermata a partire dallo stato inviato dalla room.
+function restoreHostState(state) {
+    players = state.players || [];
+    updatePlayerList();
+    if (state.status === 'waiting') {
+        showWaitingRoom(state.pin, state.visibility);
+        return;
+    }
+    currentPin = state.pin;
+    showGameScreen();
+    document.getElementById('questionText').textContent = '';
+    document.getElementById('correctAnswer').textContent = '';
+    if (state.status === 'playing') {
+        document.getElementById('roundInfo').textContent =
+            'Partita avviata. Premi "Prossimo round" per iniziare.';
+        document.getElementById('nextBtn').style.display = 'inline-block';
+    } else if (state.status === 'round_open') {
+        showRound({round: state.current_round, question: state.question});
+    } else if (state.status === 'round_closed') {
+        showResults({
+            round: state.current_round,
+            correct: state.correct,
+            leaderboard: state.leaderboard,
+            has_next_round: state.has_next_round
+        });
     }
 }
 
@@ -194,9 +260,7 @@ function handleEvent(ev) {
         players = players.filter(p => p !== ev.username);
         updatePlayerList();
     } else if (ev.type === 'game_started') {
-        document.getElementById('step2').style.display = 'none';
-        document.getElementById('step3').style.display = 'block';
-        document.getElementById('startBtn').disabled = true;
+        showGameScreen();
         document.getElementById('roundInfo').textContent =
             'Partita avviata. Premi "Prossimo round" per iniziare.';
         document.getElementById('questionText').textContent = '';
@@ -208,8 +272,10 @@ function handleEvent(ev) {
     } else if (ev.type === 'round_closed') {
         showResults(ev);
     } else if (ev.type === 'game_finished') {
+        forgetRoom();
         showFinal(ev);
     } else if (ev.type === 'game_cancelled') {
+        forgetRoom();
         alert('Stanza annullata.');
         location.reload();
     }

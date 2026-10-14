@@ -42,3 +42,12 @@
     margin: 10px 0;
     font-family: monospace;
 }
+/* ===== Avviso host disconnesso ===== */
+.host-notice {
+    padding: 10px 14px;
+    margin: 0 0 12px;
+    background: #fff6e0;
+    border: 1px solid #f0c36d;
+    border-radius: 8px;
+    color: #7a5a00;
+}

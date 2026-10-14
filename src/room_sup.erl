@@ -1,13 +1,13 @@
 -module(room_sup).
 -behaviour(supervisor).
 
--export([start_link/0, start_room/4, init/1]).
+-export([start_link/0, start_room/1, init/1]).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_room(Pin, SessionId, HostPid, Visibility) ->
-    supervisor:start_child(?MODULE, [Pin, SessionId, HostPid, Visibility]).
+start_room(Args) when is_map(Args) ->
+    supervisor:start_child(?MODULE, [Args]).
 
 init([]) ->
     SupFlags = #{strategy => simple_one_for_one,
