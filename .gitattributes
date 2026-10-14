@@ -1,0 +1,4 @@
+# File eseguiti nei container Linux: sempre con terminatori LF.
+*.sh text eol=lf
+deploy/* text eol=lf
+config/* text eol=lf

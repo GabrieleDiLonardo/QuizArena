@@ -16,16 +16,30 @@ Progetto per il corso di *Distributed Systems and Middleware Technologies* (AA 2
 
 Erlang/OTP + Mnesia · Tomcat 10 · Jakarta Servlet 6 · WebSocket · Jinterface · Maven · rebar3
 
+## Deploy distribuito
+
+Tre macchine (nodo Erlang + Tomcat) e Nginx come ingresso unico: vedi
+[deploy/README.md](deploy/README.md). In locale:
+
+```
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
 ## Test
 
 ```
-rebar3 eunit --module=quizarena_room_tests
+rebar3 eunit
 ```
 
-Gli scenari (partita completa, uscite e rientri di host e giocatori,
-periodo di grazia dell'host, creazione concorrente di stanze, pulizia
-delle sessioni orfane) passano dal gateway come farebbe il web tier e
-usano una directory Mnesia temporanea, senza toccare i dati locali.
+- `quizarena_room_tests`: partita completa, uscite e rientri di host e
+  giocatori, periodo di grazia dell'host, creazione concorrente di stanze,
+  pulizia delle sessioni orfane. Passano dal gateway come farebbe il web
+  tier.
+- `quizarena_cluster_tests`: tre nodi Erlang reali (modulo `peer`): bootstrap
+  di Mnesia in qualunque ordine, rientro di un nodo caduto, elezione Bully,
+  ripristino di una partita dopo la caduta del nodo che la ospita.
+
+Usano directory Mnesia temporanee, senza toccare i dati locali.
  
 
 ## Problemi
@@ -42,7 +56,7 @@ usano una directory Mnesia temporanea, senza toccare i dati locali.
 
 
 
-Hardcoded node Erlang
+✅ Hardcoded node Erlang (ora configurabile: QUIZARENA_CLUSTER_NODES o sys.config)
 In quizarena_app.erl:
 
 erlang

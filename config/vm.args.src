@@ -1,3 +1,6 @@
 -sname ${NODE_NAME}
 -setcookie ${ERLANG_COOKIE}
+## Porta fissa per la distribuzione Erlang (oltre a epmd sulla 4369),
+## da aprire nei firewall delle macchine.
+-kernel inet_dist_listen_min 9100 inet_dist_listen_max 9100
 +K true

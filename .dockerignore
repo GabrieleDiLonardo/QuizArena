@@ -1,0 +1,7 @@
+.git
+_build
+web/target
+Mnesia*
+data
+erl_crash.dump
+*.dump
