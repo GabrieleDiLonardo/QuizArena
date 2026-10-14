@@ -20,6 +20,7 @@ public final class LogoutServlet extends HttpServlet {
         if (session != null) {
             session.invalidate();
         }
+        response.addCookie(AuthToken.expiredCookie(request.getContextPath()));
 
         response.sendRedirect(response.encodeRedirectURL(
                 request.getContextPath() + "/"));

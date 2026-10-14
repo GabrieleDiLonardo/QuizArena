@@ -19,6 +19,18 @@ let roomVisibility = 'public';
 let cancelPending = false;
 let hostRejoinPending = false;
 const HOST_PIN_KEY = 'qa_host_pin';
+// Vedi play.js: deduplica degli eventi e rientro ritentato durante il
+// ripristino della stanza su un altro nodo.
+let lastSeq = 0;
+const REJOIN_RETRY_MS = 1000;
+const MAX_REJOIN_ATTEMPTS = 20;
+let rejoinAttempts = 0;
+
+function sendHostRejoin(pin) {
+    hostRejoinPending = true;
+    lastSeq = 0;
+    ws.send({action: 'host_rejoin', pin: pin});
+}
 
 // ===== Toggle visibilità stanza =====
 const visibilityToggle = document.getElementById('visibilityToggle');
@@ -71,8 +83,8 @@ function handleMessage(msg) {
         const savedPin = localStorage.getItem(HOST_PIN_KEY);
         if (savedPin) {
             // Pagina ricaricata o connessione persa: riprende la stanza.
-            hostRejoinPending = true;
-            ws.send({action: 'host_rejoin', pin: savedPin});
+            rejoinAttempts = 0;
+            sendHostRejoin(savedPin);
         }
         loadMyQuizzes();
         loadBrowsableQuizzes();
@@ -80,6 +92,8 @@ function handleMessage(msg) {
     }
     if (msg.type === 'host_rejoined') {
         hostRejoinPending = false;
+        rejoinAttempts = 0;
+        lastSeq = msg.state.seq || 0;
         restoreHostState(msg.state);
         return;
     }
@@ -92,13 +106,21 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'room_created') {
+        lastSeq = 0;
         showWaitingRoom(msg.pin, msg.visibility);
         return;
     }
     if (msg.type === 'error') {
         if (hostRejoinPending) {
-            // La stanza non esiste piu': si riparte da zero.
             hostRejoinPending = false;
+            const savedPin = localStorage.getItem(HOST_PIN_KEY);
+            if (msg.code === 'room_not_found' && savedPin
+                    && rejoinAttempts < MAX_REJOIN_ATTEMPTS) {
+                rejoinAttempts++;
+                setTimeout(() => sendHostRejoin(savedPin), REJOIN_RETRY_MS);
+                return;
+            }
+            // La stanza non esiste piu': si riparte da zero.
             forgetRoom();
             return;
         }
@@ -120,8 +142,17 @@ function handleMessage(msg) {
         location.reload();
         return;
     }
+    if (msg.type === 'room_recovering') {
+        log('Server della partita non raggiungibile: ripristino in corso…');
+        return;
+    }
     if (msg.type === 'event') {
-        handleEvent(msg.event);
+        const ev = msg.event;
+        if (typeof ev.seq === 'number') {
+            if (ev.seq <= lastSeq) return;
+            lastSeq = ev.seq;
+        }
+        handleEvent(ev);
     }
 }
 

@@ -12,21 +12,13 @@ import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.servlet.http.HttpSession;
 
 @WebServlet(name = "historyServlet", value = "/history")
 public final class HistoryServlet extends HttpServlet {
 
     private static final long ERLANG_TIMEOUT_MILLIS = 2000;
 
-    private String backendNode;
-    private String gatewayName;
 
-    @Override
-    public void init() throws ServletException {
-        backendNode = requireInitParameter("erlangBackendNode");
-        gatewayName = requireInitParameter("erlangGatewayName");
-    }
 
     @Override
     protected void doGet(
@@ -44,8 +36,7 @@ public final class HistoryServlet extends HttpServlet {
             return;
         }
 
-        HttpSession session = request.getSession(false);
-        String username = AuthenticationSession.username(session);
+        String username = AuthenticationSession.username(request);
         if (username == null) {
             response.sendError(
                     HttpServletResponse.SC_UNAUTHORIZED,
@@ -56,8 +47,6 @@ public final class HistoryServlet extends HttpServlet {
 
         try {
             List<GameHistoryEntry> history = client.getHistory(
-                    backendNode,
-                    gatewayName,
                     username,
                     ERLANG_TIMEOUT_MILLIS
             );
@@ -75,11 +64,4 @@ public final class HistoryServlet extends HttpServlet {
                 .forward(request, response);
     }
 
-    private String requireInitParameter(String name) throws ServletException {
-        String value = getServletContext().getInitParameter(name);
-        if (value == null || value.isBlank()) {
-            throw new ServletException("Missing context parameter: " + name);
-        }
-        return value;
-    }
 }

@@ -10,7 +10,6 @@ import jakarta.servlet.ServletResponse;
 import jakarta.servlet.annotation.WebFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.servlet.http.HttpSession;
 
 @WebFilter(urlPatterns = {
     "/lobby.html",
@@ -38,9 +37,7 @@ public final class AuthenticationFilter implements Filter {
             return;
         }
 
-        HttpSession session = request.getSession(false);
-
-        if (AuthenticationSession.username(session) == null) {
+        if (AuthenticationSession.username(request) == null) {
             if (request.getServletPath().startsWith("/api/")) {
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 response.setContentType("application/json");

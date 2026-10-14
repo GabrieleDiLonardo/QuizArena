@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSessionBindingEvent;
 import jakarta.servlet.http.HttpSessionBindingListener;
 import jakarta.servlet.http.HttpSession;
@@ -35,6 +36,22 @@ public final class AuthenticationSession {
         }
 
         return null;
+    }
+
+    // Utente autenticato della richiesta. Se questo Tomcat non ha una
+    // sessione per l'utente (login fatto su un altro nodo del cluster) ma il
+    // cookie firmato e' valido, la sessione locale viene ricreata.
+    public static String username(HttpServletRequest request) {
+        String username = username(request.getSession(false));
+        if (username != null) {
+            return username;
+        }
+        String fromCookie = AuthToken.usernameFrom(request);
+        if (fromCookie == null) {
+            return null;
+        }
+        request.getSession(true).setAttribute(USERNAME_ATTRIBUTE, fromCookie);
+        return fromCookie;
     }
 
     public static boolean registerWebSocket(

@@ -16,21 +16,14 @@ public final class RegisterServlet extends HttpServlet {
 
     private static final long ERLANG_TIMEOUT_MILLIS = 5000;
 
-    private String backendNode;
-    private String gatewayName;
 
-    @Override
-    public void init() throws ServletException {
-        backendNode = requireInitParameter("erlangBackendNode");
-        gatewayName = requireInitParameter("erlangGatewayName");
-    }
 
     @Override
     protected void doGet(
             HttpServletRequest request,
             HttpServletResponse response
     ) throws IOException, ServletException {
-        if (AuthenticationSession.username(request.getSession(false)) != null) {
+        if (AuthenticationSession.username(request) != null) {
             response.sendRedirect(response.encodeRedirectURL(
                     request.getContextPath() + "/"));
             return;
@@ -64,8 +57,6 @@ public final class RegisterServlet extends HttpServlet {
 
         try {
             client.registerUser(
-                    backendNode,
-                    gatewayName,
                     username,
                     password,
                     ERLANG_TIMEOUT_MILLIS
@@ -134,13 +125,6 @@ public final class RegisterServlet extends HttpServlet {
         return null;
     }
 
-    private String requireInitParameter(String name) throws ServletException {
-        String value = getServletContext().getInitParameter(name);
-        if (value == null || value.isBlank()) {
-            throw new ServletException("Missing context parameter: " + name);
-        }
-        return value;
-    }
 
     private static String parameter(
             HttpServletRequest request,

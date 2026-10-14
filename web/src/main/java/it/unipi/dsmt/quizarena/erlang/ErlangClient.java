@@ -2,7 +2,13 @@ package it.unipi.dsmt.quizarena.erlang;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import com.ericsson.otp.erlang.OtpErlangAtom;
 import com.ericsson.otp.erlang.OtpErlangDecodeException;
@@ -17,6 +23,7 @@ import com.ericsson.otp.erlang.OtpErlangString;
 import com.ericsson.otp.erlang.OtpErlangTuple;
 import com.ericsson.otp.erlang.OtpMbox;
 import com.ericsson.otp.erlang.OtpNode;
+import com.ericsson.otp.erlang.OtpNodeStatus;
 
 import it.unipi.dsmt.quizarena.model.QuizDetails;
 import it.unipi.dsmt.quizarena.model.QuizDraft;
@@ -27,48 +34,126 @@ import it.unipi.dsmt.quizarena.model.GameHistoryEntry;
 
 public final class ErlangClient implements AutoCloseable {
 
-    private final OtpNode node;
+    private static final Logger LOGGER =
+            Logger.getLogger(ErlangClient.class.getName());
+    private static final long PING_TIMEOUT_MILLIS = 1000;
+    private static final long HEALTH_CHECK_PERIOD_MILLIS = 2000;
 
-    public ErlangClient(String nodeName, String cookie) throws IOException {
+    private final OtpNode node;
+    private final List<String> backends;
+    private final String gatewayName;
+    private final ScheduledExecutorService healthCheck;
+    private volatile String currentBackend;
+
+    // I nodi Erlang sono elencati in ordine di preferenza: il primo e' quello
+    // sulla stessa macchina, gli altri sono usati solo se non e' raggiungibile.
+    // Le room sono registrate con global, quindi qualunque gateway del
+    // cluster puo' servire qualunque partita.
+    public ErlangClient(
+            String nodeName,
+            String cookie,
+            List<String> backends,
+            String gatewayName
+    ) throws IOException {
         if (nodeName == null || nodeName.isBlank()) {
             throw new IllegalArgumentException("nodeName must not be blank");
         }
         if (cookie == null || cookie.isBlank()) {
             throw new IllegalArgumentException("cookie must not be blank");
         }
+        if (backends == null || backends.isEmpty()) {
+            throw new IllegalArgumentException("backends must not be empty");
+        }
+        if (gatewayName == null || gatewayName.isBlank()) {
+            throw new IllegalArgumentException("gatewayName must not be blank");
+        }
+        this.backends = List.copyOf(new LinkedHashSet<>(backends));
+        this.gatewayName = gatewayName;
         this.node = new OtpNode(nodeName, cookie);
+        node.registerStatusHandler(new OtpNodeStatus() {
+            @Override
+            public void remoteStatus(String remoteNode, boolean up, Object info) {
+                if (!up && remoteNode.equals(currentBackend)) {
+                    LOGGER.warning("Erlang backend down: " + remoteNode);
+                    currentBackend = null;
+                }
+            }
+        });
+        this.healthCheck = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "quizarena-erlang-health");
+            thread.setDaemon(true);
+            return thread;
+        });
+        healthCheck.scheduleWithFixedDelay(this::checkBackend,
+                HEALTH_CHECK_PERIOD_MILLIS, HEALTH_CHECK_PERIOD_MILLIS,
+                TimeUnit.MILLISECONDS);
     }
 
     public String getNodeName() {
         return node.node();
     }
 
+    public List<String> getBackends() {
+        return backends;
+    }
+
     public ErlangGameSession openGameSession(
-            String remoteNode,
-            String gatewayName,
             ErlangGameSession.Listener listener
     ) {
-        return new ErlangGameSession(node, remoteNode, gatewayName, listener);
+        return new ErlangGameSession(node, this::currentBackend,
+                gatewayName, listener);
     }
 
-    public boolean isReachable(String remoteNode, long timeoutMillis) {
-        if (remoteNode == null || remoteNode.isBlank()) {
-            throw new IllegalArgumentException("remoteNode must not be blank");
+    // Nodo Erlang a cui inviare le richieste: quello corrente se ancora
+    // raggiungibile, altrimenti il primo raggiungibile in ordine di preferenza.
+    String currentBackend() throws IOException {
+        String backend = currentBackend;
+        if (backend != null) {
+            return backend;
         }
-        if (timeoutMillis <= 0) {
-            throw new IllegalArgumentException("timeoutMillis must be positive");
-        }
-        return node.ping(remoteNode, timeoutMillis);
+        return selectBackend();
     }
 
-    public boolean isGatewayReachable(
-            String remoteNode,
-            String gatewayName,
-            long timeoutMillis
-    ) {
+    private synchronized String selectBackend() throws IOException {
+        if (currentBackend != null) {
+            return currentBackend;
+        }
+        for (String candidate : backends) {
+            if (node.ping(candidate, PING_TIMEOUT_MILLIS)) {
+                currentBackend = candidate;
+                LOGGER.info("Using Erlang backend " + candidate);
+                return candidate;
+            }
+        }
+        throw new IOException("No Erlang backend reachable: " + backends);
+    }
+
+    // Controllo periodico: scarta il backend corrente se non risponde e torna
+    // al nodo preferito (quello locale) appena e' di nuovo disponibile.
+    private void checkBackend() {
+        try {
+            String backend = currentBackend;
+            String preferred = backends.get(0);
+            if (backend == null) {
+                selectBackend();
+            } else if (!node.ping(backend, PING_TIMEOUT_MILLIS)) {
+                currentBackend = null;
+                selectBackend();
+            } else if (!backend.equals(preferred)
+                    && node.ping(preferred, PING_TIMEOUT_MILLIS)) {
+                currentBackend = preferred;
+                LOGGER.info("Back to preferred Erlang backend " + preferred);
+            }
+        } catch (IOException exception) {
+            LOGGER.log(Level.WARNING, exception.getMessage());
+        } catch (RuntimeException exception) {
+            LOGGER.log(Level.WARNING, "Erlang health check failed", exception);
+        }
+    }
+
+    public boolean isGatewayReachable(long timeoutMillis) {
         try {
             OtpErlangObject result = sendRequest(
-                    remoteNode, gatewayName,
                     new OtpErlangAtom("ping"), timeoutMillis);
             return result instanceof OtpErlangTuple resultTuple
                     && resultTuple.arity() == 2
@@ -82,7 +167,6 @@ public final class ErlangClient implements AutoCloseable {
     // ---------- Autenticazione ----------
 
     public void registerUser(
-            String remoteNode, String gatewayName,
             String username, String password, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
@@ -90,15 +174,13 @@ public final class ErlangClient implements AutoCloseable {
                 new OtpErlangString(username),
                 new OtpErlangString(password)
         });
-        OtpErlangObject content = requireOk(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis));
+        OtpErlangObject content = requireOk(sendRequest(request, timeoutMillis));
         if (!new OtpErlangAtom("registered").equals(content)) {
             throw new IOException("Unexpected registration result");
         }
     }
 
     public String authenticateUser(
-            String remoteNode, String gatewayName,
             String username, String password, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
@@ -106,22 +188,20 @@ public final class ErlangClient implements AutoCloseable {
                 new OtpErlangString(username),
                 new OtpErlangString(password)
         });
-        OtpErlangObject content = requireOk(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis));
+        OtpErlangObject content = requireOk(sendRequest(request, timeoutMillis));
         return decodeString(content, "username");
     }
 
     // ---------- Quiz ----------
 
     public List<QuizSummary> listOwnedQuizzes(
-            String remoteNode, String gatewayName, String owner, long timeoutMillis
+            String owner, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
                 new OtpErlangAtom("list_owned_quizzes"),
                 new OtpErlangString(owner)
         });
-        OtpErlangObject content = requireOk(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis));
+        OtpErlangObject content = requireOk(sendRequest(request, timeoutMillis));
         if (!(content instanceof OtpErlangList quizList)) {
             throw new IOException("Expected a list of owned quizzes");
         }
@@ -133,14 +213,13 @@ public final class ErlangClient implements AutoCloseable {
     }
 
     public List<QuizSummary> listBrowsableQuizzes(
-            String remoteNode, String gatewayName, String username, long timeoutMillis
+            String username, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
                 new OtpErlangAtom("list_browsable_quizzes"),
                 new OtpErlangString(username)
         });
-        OtpErlangObject content = requireOk(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis));
+        OtpErlangObject content = requireOk(sendRequest(request, timeoutMillis));
         if (!(content instanceof OtpErlangList quizList)) {
             throw new IOException("Expected a list of browsable quizzes");
         }
@@ -152,7 +231,7 @@ public final class ErlangClient implements AutoCloseable {
     }
 
     public QuizDetails getOwnedQuiz(
-            String remoteNode, String gatewayName, String owner,
+            String owner,
             QuizId quizId, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
@@ -160,12 +239,11 @@ public final class ErlangClient implements AutoCloseable {
                 new OtpErlangString(owner),
                 encodeQuizId(quizId)
         });
-        return decodeQuizDetails(requireOk(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis)));
+        return decodeQuizDetails(requireOk(sendRequest(request, timeoutMillis)));
     }
 
     public QuizId createQuiz(
-            String remoteNode, String gatewayName, String owner,
+            String owner,
             QuizDraft quiz, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
@@ -173,12 +251,11 @@ public final class ErlangClient implements AutoCloseable {
                 new OtpErlangString(owner),
                 encodeQuizDraft(quiz)
         });
-        return decodeQuizId(requireOk(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis)));
+        return decodeQuizId(requireOk(sendRequest(request, timeoutMillis)));
     }
 
     public void updateQuiz(
-            String remoteNode, String gatewayName, String owner,
+            String owner,
             QuizId quizId, QuizDraft quiz, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
@@ -187,12 +264,11 @@ public final class ErlangClient implements AutoCloseable {
                 encodeQuizId(quizId),
                 encodeQuizDraft(quiz)
         });
-        requireOkAtom(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis));
+        requireOkAtom(sendRequest(request, timeoutMillis));
     }
 
     public void deleteQuiz(
-            String remoteNode, String gatewayName, String owner,
+            String owner,
             QuizId quizId, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
@@ -200,22 +276,19 @@ public final class ErlangClient implements AutoCloseable {
                 new OtpErlangString(owner),
                 encodeQuizId(quizId)
         });
-        requireOkAtom(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis));
+        requireOkAtom(sendRequest(request, timeoutMillis));
     }
 
     // ---------- Storico ----------
 
     public List<GameHistoryEntry> getHistory(
-            String remoteNode, String gatewayName,
             String username, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
                 new OtpErlangAtom("get_history"),
                 new OtpErlangString(username)
         });
-        OtpErlangObject content = requireOk(sendRequest(
-                remoteNode, gatewayName, request, timeoutMillis));
+        OtpErlangObject content = requireOk(sendRequest(request, timeoutMillis));
         if (!(content instanceof OtpErlangList historyList)) {
             throw new IOException("Expected a list of game results");
         }
@@ -264,28 +337,22 @@ public final class ErlangClient implements AutoCloseable {
     }
 
     private OtpErlangObject sendRequest(
-            String remoteNode, String gatewayName,
             OtpErlangObject requestBody, long timeoutMillis
     ) throws IOException {
-        if (remoteNode == null || remoteNode.isBlank()) {
-            throw new IllegalArgumentException("remoteNode must not be blank");
-        }
-        if (gatewayName == null || gatewayName.isBlank()) {
-            throw new IllegalArgumentException("gatewayName must not be blank");
-        }
         if (requestBody == null) {
             throw new IllegalArgumentException("request must not be null");
         }
         if (timeoutMillis <= 0) {
             throw new IllegalArgumentException("timeoutMillis must be positive");
         }
+        String backend = currentBackend();
         OtpMbox mailbox = node.createMbox();
         try {
             OtpErlangRef reference = node.createRef();
             OtpErlangTuple requestMessage = new OtpErlangTuple(
                     new OtpErlangObject[]{
                             mailbox.self(), reference, requestBody});
-            mailbox.send(gatewayName, remoteNode, requestMessage);
+            mailbox.send(gatewayName, backend, requestMessage);
             OtpErlangObject message = mailbox.receive(timeoutMillis);
             if (message == null) {
                 throw new IOException("Timed out waiting for the Erlang gateway");
@@ -513,6 +580,7 @@ public final class ErlangClient implements AutoCloseable {
 
     @Override
     public void close() {
+        healthCheck.shutdownNow();
         node.close();
     }
 }

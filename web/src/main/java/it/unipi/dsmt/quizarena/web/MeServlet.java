@@ -9,7 +9,6 @@ import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.servlet.http.HttpSession;
 
 @WebServlet(name = "meServlet", value = "/api/me")
 public final class MeServlet extends HttpServlet {
@@ -19,8 +18,7 @@ public final class MeServlet extends HttpServlet {
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
             throws IOException {
-        HttpSession session = request.getSession(false);
-        String username = AuthenticationSession.username(session);
+        String username = AuthenticationSession.username(request);
 
         response.setContentType("application/json");
         response.setCharacterEncoding("UTF-8");

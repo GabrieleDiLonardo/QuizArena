@@ -40,14 +40,7 @@ public final class QuizApiServlet extends HttpServlet {
     private static final long MAX_TIME_LIMIT_MILLIS = 300000;
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    private String backendNode;
-    private String gatewayName;
 
-    @Override
-    public void init() throws ServletException {
-        backendNode = requireInitParameter("erlangBackendNode");
-        gatewayName = requireInitParameter("erlangGatewayName");
-    }
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
@@ -60,12 +53,12 @@ public final class QuizApiServlet extends HttpServlet {
             if (quizId == null) {
                 writeJson(response, HttpServletResponse.SC_OK,
                         requireClient().listOwnedQuizzes(
-                                backendNode, gatewayName, owner,
+                                owner,
                                 ERLANG_TIMEOUT_MILLIS));
             } else {
                 writeJson(response, HttpServletResponse.SC_OK,
                         requireClient().getOwnedQuiz(
-                                backendNode, gatewayName, owner, quizId,
+                                owner, quizId,
                                 ERLANG_TIMEOUT_MILLIS));
             }
         } catch (IllegalArgumentException e) {
@@ -87,7 +80,7 @@ public final class QuizApiServlet extends HttpServlet {
             requireCollectionPath(request);
             QuizDraft quiz = readQuizDraft(request);
             QuizId quizId = requireClient().createQuiz(
-                    backendNode, gatewayName, owner, quiz,
+                    owner, quiz,
                     ERLANG_TIMEOUT_MILLIS);
             writeJson(response, HttpServletResponse.SC_CREATED,
                     Map.of("id", quizId));
@@ -110,7 +103,7 @@ public final class QuizApiServlet extends HttpServlet {
             QuizId quizId = requiredQuizId(request);
             QuizDraft quiz = readQuizDraft(request);
             requireClient().updateQuiz(
-                    backendNode, gatewayName, owner, quizId, quiz,
+                    owner, quizId, quiz,
                     ERLANG_TIMEOUT_MILLIS);
             writeJson(response, HttpServletResponse.SC_OK,
                     Map.of("status", "updated"));
@@ -132,7 +125,7 @@ public final class QuizApiServlet extends HttpServlet {
         try {
             QuizId quizId = requiredQuizId(request);
             requireClient().deleteQuiz(
-                    backendNode, gatewayName, owner, quizId,
+                    owner, quizId,
                     ERLANG_TIMEOUT_MILLIS);
             writeJson(response, HttpServletResponse.SC_OK,
                     Map.of("status", "deleted"));
@@ -276,7 +269,7 @@ public final class QuizApiServlet extends HttpServlet {
     private String authenticatedUsername(
             HttpServletRequest request, HttpServletResponse response
     ) throws IOException {
-        String username = AuthenticationSession.username(request.getSession(false));
+        String username = AuthenticationSession.username(request);
         if (username == null) {
             writeError(response, HttpServletResponse.SC_UNAUTHORIZED,
                     "Autenticazione richiesta");
@@ -356,11 +349,4 @@ public final class QuizApiServlet extends HttpServlet {
         JSON.writeValue(response.getWriter(), body);
     }
 
-    private String requireInitParameter(String name) throws ServletException {
-        String value = getServletContext().getInitParameter(name);
-        if (value == null || value.isBlank()) {
-            throw new ServletException("Missing context parameter: " + name);
-        }
-        return value;
-    }
 }

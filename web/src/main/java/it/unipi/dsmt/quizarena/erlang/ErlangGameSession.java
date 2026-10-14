@@ -43,12 +43,19 @@ public class ErlangGameSession implements AutoCloseable {
         }
     }
 
+    // Restituisce il nodo Erlang a cui inviare le richieste: puo' cambiare
+    // nel corso della sessione se il nodo corrente cade.
+    interface BackendLocator {
+
+        String current() throws IOException;
+    }
+
     private static final OtpErlangAtom EVENT = new OtpErlangAtom("event");
     private static final AtomicLong SESSION_COUNTER = new AtomicLong();
 
     private OtpNode node;
     private OtpMbox mailbox;
-    private String remoteNode;
+    private BackendLocator backends;
     private String gatewayName;
     private Listener listener;
     private ConcurrentHashMap<
@@ -60,12 +67,12 @@ public class ErlangGameSession implements AutoCloseable {
 
     ErlangGameSession(
             OtpNode node,
-            String remoteNode,
+            BackendLocator backends,
             String gatewayName,
             Listener listener
     ) {
         this.node = Objects.requireNonNull(node, "node must not be null");
-        this.remoteNode = requireText(remoteNode, "remoteNode");
+        this.backends = Objects.requireNonNull(backends, "backends");
         this.gatewayName = requireText(gatewayName, "gatewayName");
         this.listener = Objects.requireNonNull(
                 listener,
@@ -121,29 +128,6 @@ public class ErlangGameSession implements AutoCloseable {
     OtpErlangObject result = sendRequest(request, timeoutMillis);
     return decodeStringResult(result, "room PIN");
 }
-    public void cancelRoom(String pin) {
-        requireText(pin, "pin");
-        if (!open.get()) {
-            return;
-        }
-
-        OtpErlangRef reference = node.createRef();
-        OtpErlangTuple request = new OtpErlangTuple(
-                new OtpErlangObject[] {
-                    new OtpErlangAtom("cancel_room"),
-                    new OtpErlangString(pin)
-                }
-        );
-        OtpErlangTuple requestMessage = new OtpErlangTuple(
-                new OtpErlangObject[] {
-                    mailbox.self(),
-                    reference,
-                    request
-                }
-        );
-        mailbox.send(gatewayName, remoteNode, requestMessage);
-    }
-
     public void join(
             String pin,
             String username,
@@ -201,7 +185,12 @@ public class ErlangGameSession implements AutoCloseable {
                     request
                 }
         );
-        mailbox.send(gatewayName, remoteNode, requestMessage);
+        try {
+            mailbox.send(gatewayName, backends.current(), requestMessage);
+        } catch (IOException exception) {
+            // Nessun backend raggiungibile: la room vedra' comunque la
+            // chiusura della mailbox tramite il link.
+        }
     }
 
     public void cancelRoom(String pin, long timeoutMillis)
@@ -372,7 +361,7 @@ public class ErlangGameSession implements AutoCloseable {
                         requestBody
                     }
             );
-            mailbox.send(gatewayName, remoteNode, requestMessage);
+            mailbox.send(gatewayName, backends.current(), requestMessage);
 
             return response.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (TimeoutException exception) {

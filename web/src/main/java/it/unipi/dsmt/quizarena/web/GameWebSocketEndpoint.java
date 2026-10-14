@@ -7,6 +7,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -41,13 +45,20 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private static final String HTTP_SESSION_PROPERTY =
             GameWebSocketEndpoint.class.getName() + ".httpSession";
     private static final ObjectMapper JSON = new ObjectMapper();
+    // Tempo concesso al cluster per ripristinare una stanza il cui nodo e'
+    // caduto: elezione del leader (alcuni secondi) piu' riavvio della room.
+    private static final long ROOM_RECOVERY_TIMEOUT_MILLIS = 20000;
+    private static final ScheduledExecutorService RECOVERY_WATCHDOG =
+            Executors.newSingleThreadScheduledExecutor(task -> {
+                Thread thread = new Thread(task, "quizarena-room-recovery");
+                thread.setDaemon(true);
+                return thread;
+            });
     private static final Logger LOGGER = Logger.getLogger(
             GameWebSocketEndpoint.class.getName()
     );
 
     private final ErlangClient client;
-    private final String backendNode;
-    private final String gatewayName;
     private final Object sendLock = new Object();
     private final Object erlangSessionLock = new Object();
     private final Object stateReplayLock = new Object();
@@ -64,29 +75,16 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private volatile String pendingTimeProbe;
     private volatile long pendingTimeProbeStartedNanos;
     private volatile long measuredRoundTripMillis;
+    private volatile ScheduledFuture<?> recoveryWatchdog;
 
-    private GameWebSocketEndpoint(
-            ErlangClient client,
-            String backendNode,
-            String gatewayName
-    ) {
+    private GameWebSocketEndpoint(ErlangClient client) {
         this.client = Objects.requireNonNull(client);
-        this.backendNode = Objects.requireNonNull(backendNode);
-        this.gatewayName = Objects.requireNonNull(gatewayName);
     }
 
-    public static ServerEndpointConfig configuration(
-            ErlangClient client,
-            String backendNode,
-            String gatewayName
-    ) {
+    public static ServerEndpointConfig configuration(ErlangClient client) {
         return ServerEndpointConfig.Builder
                 .create(GameWebSocketEndpoint.class, "/game")
-                .configurator(new Configurator(
-                        client,
-                        backendNode,
-                        gatewayName
-                ))
+                .configurator(new Configurator(client))
                 .build();
     }
 
@@ -97,26 +95,22 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 HTTP_SESSION_PROPERTY);
         Object username = config.getUserProperties().get(
                 AUTHENTICATED_USERNAME_PROPERTY);
-        if (!(handshakeSession instanceof HttpSession valueSession)
-                || !(username instanceof String value)
-                || value.isBlank()
-                || !value.equals(AuthenticationSession.username(
-                        valueSession))) {
+        if (!(username instanceof String value) || value.isBlank()) {
             closeUnauthenticated(session);
             return;
         }
-        httpSession = valueSession;
         authenticatedUsername = value;
 
-        if (!AuthenticationSession.registerWebSocket(
-                httpSession, session)) {
-            closeUnauthenticated(session);
-            return;
+        // La sessione HTTP locale esiste solo se l'utente e' passato da
+        // questo Tomcat: serve a chiudere le WebSocket al logout.
+        if (handshakeSession instanceof HttpSession valueSession
+                && value.equals(AuthenticationSession.username(valueSession))
+                && AuthenticationSession.registerWebSocket(
+                        valueSession, session)) {
+            httpSession = valueSession;
         }
 
         ErlangGameSession openedSession = client.openGameSession(
-                backendNode,
-                gatewayName,
                 new ErlangGameSession.Listener() {
                     @Override
                     public void onEvent(OtpErlangObject event) {
@@ -279,8 +273,6 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private void handleListOwnedQuizzes()
         throws IOException, ErlangServiceException {
             List<QuizSummary> quizzes = client.listOwnedQuizzes(
-                    backendNode,
-                    gatewayName,
                     authenticatedUsername,
                     ERLANG_TIMEOUT_MILLIS);
             List<Map<String, Object>> out = new ArrayList<>();
@@ -445,6 +437,8 @@ public final class GameWebSocketEndpoint extends Endpoint {
     // ---------- Internals ----------
 
     private void sendEvent(OtpErlangObject event) {
+        // Un evento dalla room indica che e' viva (eventualmente ripristinata).
+        cancelRecoveryWatchdog();
         try {
             Object converted = ErlangTermConverter.toJavaValue(event);
             if (converted instanceof Map<?, ?> map
@@ -571,6 +565,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
     @Override
     public void onClose(Session session, CloseReason closeReason) {
         closing.set(true);
+        cancelRecoveryWatchdog();
         AuthenticationSession.unregisterWebSocket(httpSession, session);
         releaseRoomAssociation();
         closeErlangSession();
@@ -618,14 +613,34 @@ public final class GameWebSocketEndpoint extends Endpoint {
 
     // Un'uscita "normal" della room segue sempre game_finished o
     // game_cancelled, gia' inoltrati al client. Qualsiasi altro motivo
-    // indica un crash della room o la perdita del nodo Erlang.
+    // indica la perdita del nodo Erlang che la ospitava (o un suo crash):
+    // il leader del cluster la ripristina altrove e la nuova room si
+    // ri-collega a questa stessa mailbox. Se entro il timeout non arriva
+    // alcun evento, la stanza e' considerata persa.
     private void handleRoomExit(OtpErlangObject reason) {
         if (new OtpErlangAtom("normal").equals(reason)) {
             return;
         }
         LOGGER.log(Level.WARNING, "Game room terminated: {0}", reason);
+        sendJson(Map.of("type", "room_recovering"));
+        cancelRecoveryWatchdog();
+        recoveryWatchdog = RECOVERY_WATCHDOG.schedule(
+                this::roomRecoveryFailed,
+                ROOM_RECOVERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+    }
+
+    private void roomRecoveryFailed() {
+        recoveryWatchdog = null;
         clearRoomAssociation();
-        sendError("room_failed", "La stanza e' terminata in modo anomalo");
+        sendError("room_failed", "La stanza non e' piu' disponibile");
+    }
+
+    private void cancelRecoveryWatchdog() {
+        ScheduledFuture<?> watchdog = recoveryWatchdog;
+        if (watchdog != null) {
+            watchdog.cancel(false);
+            recoveryWatchdog = null;
+        }
     }
 
     private ErlangGameSession currentErlangSession() throws IOException {
@@ -670,27 +685,15 @@ public final class GameWebSocketEndpoint extends Endpoint {
             extends ServerEndpointConfig.Configurator {
 
         private final ErlangClient client;
-        private final String backendNode;
-        private final String gatewayName;
 
-        private Configurator(
-                ErlangClient client,
-                String backendNode,
-                String gatewayName
-        ) {
+        private Configurator(ErlangClient client) {
             this.client = client;
-            this.backendNode = backendNode;
-            this.gatewayName = gatewayName;
         }
 
         @Override
         public <T> T getEndpointInstance(Class<T> endpointClass)
                 throws InstantiationException {
-            return endpointClass.cast(new GameWebSocketEndpoint(
-                    client,
-                    backendNode,
-                    gatewayName
-            ));
+            return endpointClass.cast(new GameWebSocketEndpoint(client));
         }
 
         @Override
@@ -699,10 +702,16 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 HandshakeRequest request,
                 HandshakeResponse response
         ) {
+            // Prima la sessione locale, poi il cookie firmato: la WebSocket
+            // puo' essere instradata su un Tomcat diverso da quello del login.
             Object session = request.getHttpSession();
             String username = session instanceof HttpSession httpSession
                     ? AuthenticationSession.username(httpSession)
                     : null;
+            if (username == null) {
+                username = AuthToken.usernameFromCookieHeaders(
+                        request.getHeaders().get("cookie"));
+            }
 
             if (username == null) {
                 endpointConfig.getUserProperties().remove(
@@ -712,8 +721,13 @@ public final class GameWebSocketEndpoint extends Endpoint {
             } else {
                 endpointConfig.getUserProperties().put(
                         AUTHENTICATED_USERNAME_PROPERTY, username);
-                endpointConfig.getUserProperties().put(
-                        HTTP_SESSION_PROPERTY, session);
+                if (session != null) {
+                    endpointConfig.getUserProperties().put(
+                            HTTP_SESSION_PROPERTY, session);
+                } else {
+                    endpointConfig.getUserProperties().remove(
+                            HTTP_SESSION_PROPERTY);
+                }
             }
         }
     }
@@ -721,7 +735,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private void handleListBrowsableQuizzes()
         throws IOException, ErlangServiceException {
     List<QuizSummary> quizzes = client.listBrowsableQuizzes(
-            backendNode, gatewayName, authenticatedUsername,
+            authenticatedUsername,
             ERLANG_TIMEOUT_MILLIS);
     List<Map<String, Object>> out = new ArrayList<>();
     for (QuizSummary q : quizzes) {

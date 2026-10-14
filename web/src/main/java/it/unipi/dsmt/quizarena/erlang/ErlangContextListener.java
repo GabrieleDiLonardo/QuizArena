@@ -1,7 +1,10 @@
 package it.unipi.dsmt.quizarena.erlang;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
 
+import it.unipi.dsmt.quizarena.web.AuthToken;
 import it.unipi.dsmt.quizarena.web.GameWebSocketEndpoint;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletContextEvent;
@@ -16,53 +19,39 @@ public final class ErlangContextListener implements ServletContextListener {
     private ErlangClient client;
 
     // Crea il nodo Java quando Tomcat avvia la web application.
+    // Ogni impostazione puo' essere fornita da una variabile d'ambiente
+    // (usata nel deploy su piu' macchine) oppure dal file web.xml.
     @Override
     public void contextInitialized(ServletContextEvent event) {
         ServletContext context = event.getServletContext();
 
-        String nodeName = requireInitParameter(
-                context,
-                "erlangNodeName"
-        );
-        String cookie = requireInitParameter(
-                context,
-                "erlangCookie"
-        );
-        String backendNode = requireInitParameter(
-                context,
-                "erlangBackendNode"
-        );
-        String gatewayName = requireInitParameter(
-                context,
-                "erlangGatewayName"
-        );
+        String nodeName = requireSetting(
+                context, "QUIZARENA_ERLANG_NODE", "erlangNodeName");
+        String cookie = requireSetting(
+                context, "QUIZARENA_COOKIE", "erlangCookie");
+        List<String> backendNodes = Arrays.stream(requireSetting(
+                        context, "QUIZARENA_BACKEND_NODES", "erlangBackendNode")
+                        .split(","))
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .toList();
+        String gatewayName = requireSetting(
+                context, "QUIZARENA_GATEWAY_NAME", "erlangGatewayName");
+        AuthToken.configure(System.getenv("QUIZARENA_AUTH_SECRET"));
 
         try {
-            client = new ErlangClient(nodeName, cookie);
+            client = new ErlangClient(
+                    nodeName, cookie, backendNodes, gatewayName);
             context.setAttribute(CLIENT_ATTRIBUTE, client);
 
-            boolean backendReachable = client.isReachable(backendNode, 2000);
+            boolean gatewayReachable = client.isGatewayReachable(2000);
             context.log(
                     "Erlang node " + client.getNodeName()
-                    + ", backend reachable: " + backendReachable
+                    + ", backends " + client.getBackends()
+                    + ", gateway reachable: " + gatewayReachable
             );
 
-            boolean gatewayReachable = backendReachable
-                    && client.isGatewayReachable(
-                            backendNode,
-                            gatewayName,
-                            2000
-                    );
-            context.log(
-                    "Erlang gateway " + gatewayName
-                    + " reachable: " + gatewayReachable
-            );
-
-            registerGameWebSocket(
-                    context,
-                    backendNode,
-                    gatewayName
-            );
+            registerGameWebSocket(context);
         } catch (IOException | DeploymentException | RuntimeException exception) {
             if (client != null) {
                 client.close();
@@ -85,27 +74,29 @@ public final class ErlangContextListener implements ServletContextListener {
         }
     }
 
-    // Legge un parametro obbligatorio dal file web.xml.
-    private static String requireInitParameter(
+    // Legge un'impostazione obbligatoria: prima dall'ambiente, poi da web.xml.
+    private static String requireSetting(
             ServletContext context,
-            String name
+            String environmentName,
+            String parameterName
     ) {
-        String value = context.getInitParameter(name);
+        String value = System.getenv(environmentName);
+        if (value == null || value.isBlank()) {
+            value = context.getInitParameter(parameterName);
+        }
 
         if (value == null || value.isBlank()) {
             throw new IllegalStateException(
-                    "Missing context parameter: " + name
+                    "Missing setting: " + environmentName
+                    + " / context parameter " + parameterName
             );
         }
 
-        return value;
+        return value.trim();
     }
 
-    private void registerGameWebSocket(
-            ServletContext context,
-            String backendNode,
-            String gatewayName
-    ) throws DeploymentException {
+    private void registerGameWebSocket(ServletContext context)
+            throws DeploymentException {
         Object attribute = context.getAttribute(
                 ServerContainer.class.getName()
         );
@@ -115,10 +106,7 @@ public final class ErlangContextListener implements ServletContextListener {
             );
         }
 
-        serverContainer.addEndpoint(GameWebSocketEndpoint.configuration(
-                client,
-                backendNode,
-                gatewayName
-        ));
+        serverContainer.addEndpoint(
+                GameWebSocketEndpoint.configuration(client));
     }
 }

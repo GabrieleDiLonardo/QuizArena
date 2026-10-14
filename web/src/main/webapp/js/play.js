@@ -19,6 +19,14 @@ let timerInterval = null;
 let roundDeadline = 0;
 let roundStartedAt = 0;
 let rejoinPending = false;
+// Ultimo evento applicato: gli eventi gia' visti (ritrasmessi dopo una
+// riconnessione) vengono scartati.
+let lastSeq = 0;
+// Dopo la caduta di un nodo la stanza puo' impiegare qualche secondo per
+// essere ripristinata altrove: il rientro viene ritentato.
+const REJOIN_RETRY_MS = 1000;
+const MAX_REJOIN_ATTEMPTS = 20;
+let rejoinAttempts = 0;
 
 // ===== Precompila il PIN dall'URL (da lobby.html?pin=XXX) =====
 (function prefillPin() {
@@ -37,8 +45,15 @@ document.getElementById('joinBtn').onclick = () => {
         alert('Inserisci il PIN');
         return;
     }
+    lastSeq = 0;
     ws.send({action: 'join', pin: pin});
 };
+
+function sendRejoin(pin) {
+    rejoinPending = true;
+    lastSeq = 0;
+    ws.send({action: 'rejoin', pin: pin});
+}
 
 // ===== Gestione messaggi dal server =====
 function handleMessage(msg) {
@@ -47,8 +62,8 @@ function handleMessage(msg) {
     if (msg.type === 'connected') {
         const savedPin = localStorage.getItem('qa_pin');
         if (savedPin) {
-            rejoinPending = true;
-            ws.send({action: 'rejoin', pin: savedPin});
+            rejoinAttempts = 0;
+            sendRejoin(savedPin);
         }
         return;
     }
@@ -65,6 +80,9 @@ function handleMessage(msg) {
     }
     if (msg.type === 'rejoined') {
         rejoinPending = false;
+        rejoinAttempts = 0;
+        lastSeq = msg.state.seq || 0;
+        showHostNotice('');
         currentPin = msg.pin;
         currentUsername = msg.state.username;
         localStorage.setItem('qa_pin', msg.pin);
@@ -75,14 +93,32 @@ function handleMessage(msg) {
     if (msg.type === 'error') {
         if (rejoinPending) {
             rejoinPending = false;
+            const savedPin = localStorage.getItem('qa_pin');
+            if (msg.code === 'room_not_found' && savedPin
+                    && rejoinAttempts < MAX_REJOIN_ATTEMPTS) {
+                rejoinAttempts++;
+                showHostNotice('Partita in ripristino su un altro server…');
+                setTimeout(() => sendRejoin(savedPin), REJOIN_RETRY_MS);
+                return;
+            }
+            showHostNotice('');
             currentPin = null;
             localStorage.removeItem('qa_pin');
         }
         alert('Errore: ' + msg.message);
         return;
     }
+    if (msg.type === 'room_recovering') {
+        showHostNotice('Il server della partita non risponde: ripristino in corso…');
+        return;
+    }
     if (msg.type === 'event') {
-        handleEvent(msg.event);
+        const ev = msg.event;
+        if (typeof ev.seq === 'number') {
+            if (ev.seq <= lastSeq) return;
+            lastSeq = ev.seq;
+        }
+        handleEvent(ev);
     }
 }
 
@@ -97,7 +133,7 @@ function handleEvent(ev) {
     } else if (ev.type === 'host_disconnected') {
         showHostNotice('L\'host si è disconnesso: attendi fino a '
             + Math.round(ev.grace_ms / 1000) + 's che rientri…');
-    } else if (ev.type === 'host_rejoined') {
+    } else if (ev.type === 'host_rejoined' || ev.type === 'room_recovered') {
         showHostNotice('');
     } else if (ev.type === 'game_started') {
         document.getElementById('step2').style.display = 'none';
