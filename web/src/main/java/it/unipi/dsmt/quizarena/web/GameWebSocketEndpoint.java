@@ -48,9 +48,15 @@ public final class GameWebSocketEndpoint extends Endpoint {
     // Tempo concesso al cluster per ripristinare una stanza il cui nodo e'
     // caduto: elezione del leader (alcuni secondi) piu' riavvio della room.
     private static final long ROOM_RECOVERY_TIMEOUT_MILLIS = 20000;
-    private static final ScheduledExecutorService RECOVERY_WATCHDOG =
+    // Sonde per stimare l'RTT del client (algoritmo di Cristian): ne vengono
+    // inviate piu' d'una e si tiene il valore minimo fra gli ultimi campioni,
+    // il meno disturbato da ritardi occasionali della rete.
+    private static final int PROBES_PER_BURST = 3;
+    private static final long PROBE_SPACING_MILLIS = 150;
+    private static final int RTT_SAMPLES = 10;
+    private static final ScheduledExecutorService SCHEDULER =
             Executors.newSingleThreadScheduledExecutor(task -> {
-                Thread thread = new Thread(task, "quizarena-room-recovery");
+                Thread thread = new Thread(task, "quizarena-ws-scheduler");
                 thread.setDaemon(true);
                 return thread;
             });
@@ -72,8 +78,10 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private String authenticatedUsername;
     private HttpSession httpSession;
     private boolean stateReplayInProgress;
-    private volatile String pendingTimeProbe;
-    private volatile long pendingTimeProbeStartedNanos;
+    private final Map<String, Long> pendingTimeProbes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Deque<Long> roundTripSamples =
+            new java.util.ArrayDeque<>();
     private volatile long measuredRoundTripMillis;
     private volatile ScheduledFuture<?> recoveryWatchdog;
 
@@ -147,7 +155,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
 
         session.addMessageHandler(String.class, this::handleMessage);
         sendJson(Map.of("type", "connected"));
-        issueTimeProbe();
+        issueTimeProbes();
     }
 
     private void closeUnauthenticated(Session session) {
@@ -175,6 +183,8 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 case "create_room" -> handleCreateRoom(message);
                 case "cancel_room" -> handleCancelRoom();
                 case "list_rooms" -> handleListRooms();
+                case "subscribe_lobby" -> handleSubscribeLobby();
+                case "events_since" -> handleEventsSince(message);
                 case "join" -> handleJoin(message);
                 case "rejoin" -> handleRejoin(message);
                 case "host_rejoin" -> handleHostRejoin(message);
@@ -264,6 +274,35 @@ public final class GameWebSocketEndpoint extends Endpoint {
         roomPin = null;
         role = null;
         sendJson(Map.of("type", "cancelled", "pin", cancelledPin));
+    }
+
+    private void handleSubscribeLobby()
+            throws IOException, ErlangServiceException {
+        var rooms = currentErlangSession().subscribeLobby(
+                ERLANG_TIMEOUT_MILLIS);
+        sendJson(Map.of("type", "rooms", "rooms", rooms));
+    }
+
+    // Il client ha visto un buco nella numerazione degli eventi: gli eventi
+    // mancanti vengono richiesti alla room, che ne conserva gli ultimi.
+    private void handleEventsSince(JsonNode message)
+            throws IOException, ErlangServiceException {
+        if (roomPin == null) {
+            sendError("room_not_created", "No room associated");
+            return;
+        }
+        long since = requiredLong(message, "since");
+        try {
+            var events = currentErlangSession().eventsSince(
+                    roomPin, since, ERLANG_TIMEOUT_MILLIS);
+            sendJson(Map.of("type", "events", "events", events));
+        } catch (ErlangServiceException exception) {
+            if ("too_far_behind".equals(exception.getReason())) {
+                sendJson(Map.of("type", "resync_required"));
+                return;
+            }
+            throw exception;
+        }
     }
 
     private void handleListRooms() throws IOException, ErlangServiceException {
@@ -415,13 +454,20 @@ public final class GameWebSocketEndpoint extends Endpoint {
 
     private void handleTimeProbeReply(JsonNode message) {
         String nonce = requiredText(message, "nonce");
-        if (!nonce.equals(pendingTimeProbe)) {
+        Long startedNanos = pendingTimeProbes.remove(nonce);
+        if (startedNanos == null) {
             return;
         }
-        measuredRoundTripMillis = Math.max(0,
-                (System.nanoTime() - pendingTimeProbeStartedNanos)
-                        / 1_000_000L);
-        pendingTimeProbe = null;
+        long sample = Math.max(0,
+                (System.nanoTime() - startedNanos) / 1_000_000L);
+        synchronized (roundTripSamples) {
+            roundTripSamples.addLast(sample);
+            while (roundTripSamples.size() > RTT_SAMPLES) {
+                roundTripSamples.removeFirst();
+            }
+            measuredRoundTripMillis = roundTripSamples.stream()
+                    .mapToLong(Long::longValue).min().orElse(sample);
+        }
     }
 
     private void handleEndGame()
@@ -490,14 +536,25 @@ public final class GameWebSocketEndpoint extends Endpoint {
         sendJson(Map.of("type", "event", "event", event));
         if (event instanceof Map<?, ?> map
                 && "round_started".equals(map.get("type"))) {
-            issueTimeProbe();
+            issueTimeProbes();
+        }
+    }
+
+    // Alla connessione e a ogni nuovo round: una raffica di sonde distanziate.
+    private void issueTimeProbes() {
+        pendingTimeProbes.clear();
+        for (int i = 0; i < PROBES_PER_BURST; i++) {
+            SCHEDULER.schedule(this::issueTimeProbe,
+                    i * PROBE_SPACING_MILLIS, TimeUnit.MILLISECONDS);
         }
     }
 
     private void issueTimeProbe() {
+        if (closing.get()) {
+            return;
+        }
         String nonce = UUID.randomUUID().toString();
-        pendingTimeProbeStartedNanos = System.nanoTime();
-        pendingTimeProbe = nonce;
+        pendingTimeProbes.put(nonce, System.nanoTime());
         sendJson(Map.of("type", "time_probe", "nonce", nonce));
     }
 
@@ -621,10 +678,17 @@ public final class GameWebSocketEndpoint extends Endpoint {
         if (new OtpErlangAtom("normal").equals(reason)) {
             return;
         }
+        if (roomPin == null) {
+            // Nessuna stanza: e' terminato il processo della lobby a cui la
+            // pagina era iscritta (es. caduta del nodo). La pagina si
+            // iscrive di nuovo.
+            sendJson(Map.of("type", "lobby_resubscribe"));
+            return;
+        }
         LOGGER.log(Level.WARNING, "Game room terminated: {0}", reason);
         sendJson(Map.of("type", "room_recovering"));
         cancelRecoveryWatchdog();
-        recoveryWatchdog = RECOVERY_WATCHDOG.schedule(
+        recoveryWatchdog = SCHEDULER.schedule(
                 this::roomRecoveryFailed,
                 ROOM_RECOVERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
     }

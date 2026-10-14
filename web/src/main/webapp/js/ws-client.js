@@ -89,3 +89,70 @@ class QuizWsClient {
         this.banner.style.display = visible ? 'block' : 'none';
     }
 }
+
+// Hold-back queue degli eventi di una stanza.
+// La room numera ogni evento (seq) ed e' l'unico mittente, quindi definisce
+// un ordine totale. Il client consegna gli eventi esattamente in quell'ordine:
+//  - un evento gia' visto (ritrasmesso dopo una riconnessione) e' scartato;
+//  - un evento arrivato prima di uno che lo precede resta in attesa e gli
+//    eventi mancanti vengono richiesti alla room (events_since);
+//  - se la room non li ha piu', la pagina si risincronizza con lo stato.
+class EventSequencer {
+    static RETRY_MS = 3000;
+
+    constructor(ws, deliver) {
+        this.ws = ws;
+        this.deliver = deliver;
+        this.timer = null;
+        this.reset(0);
+    }
+
+    // Riparte da uno stato noto (es. lo stato ricevuto al rientro).
+    reset(seq) {
+        this.lastSeq = seq;
+        this.holdBack = new Map();
+        this.requested = false;
+        clearTimeout(this.timer);
+    }
+
+    receive(ev) {
+        if (typeof ev.seq !== 'number') {
+            this.deliver(ev);
+            return;
+        }
+        if (ev.seq <= this.lastSeq || this.holdBack.has(ev.seq)) return;
+        this.holdBack.set(ev.seq, ev);
+        this.drain();
+        if (this.holdBack.size > 0) this.requestMissing();
+    }
+
+    // Risposta a events_since: gli eventi mancanti, in ordine.
+    receiveMissing(events) {
+        this.requested = false;
+        clearTimeout(this.timer);
+        events.forEach(ev => this.receive(ev));
+    }
+
+    drain() {
+        while (this.holdBack.has(this.lastSeq + 1)) {
+            const ev = this.holdBack.get(this.lastSeq + 1);
+            this.holdBack.delete(this.lastSeq + 1);
+            this.lastSeq++;
+            this.deliver(ev);
+        }
+        if (this.holdBack.size === 0) {
+            this.requested = false;
+            clearTimeout(this.timer);
+        }
+    }
+
+    requestMissing() {
+        if (this.requested) return;
+        this.requested = true;
+        this.ws.send({action: 'events_since', since: this.lastSeq});
+        this.timer = setTimeout(() => {
+            this.requested = false;
+            if (this.holdBack.size > 0) this.requestMissing();
+        }, EventSequencer.RETRY_MS);
+    }
+}

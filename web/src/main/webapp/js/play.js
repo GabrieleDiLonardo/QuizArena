@@ -19,9 +19,8 @@ let timerInterval = null;
 let roundDeadline = 0;
 let roundStartedAt = 0;
 let rejoinPending = false;
-// Ultimo evento applicato: gli eventi gia' visti (ritrasmessi dopo una
-// riconnessione) vengono scartati.
-let lastSeq = 0;
+// Eventi della stanza consegnati nell'ordine della room (vedi ws-client.js).
+const events = new EventSequencer(ws, handleEvent);
 // Dopo la caduta di un nodo la stanza puo' impiegare qualche secondo per
 // essere ripristinata altrove: il rientro viene ritentato.
 const REJOIN_RETRY_MS = 1000;
@@ -45,13 +44,13 @@ document.getElementById('joinBtn').onclick = () => {
         alert('Inserisci il PIN');
         return;
     }
-    lastSeq = 0;
+    events.reset(0);
     ws.send({action: 'join', pin: pin});
 };
 
 function sendRejoin(pin) {
     rejoinPending = true;
-    lastSeq = 0;
+    events.reset(0);
     ws.send({action: 'rejoin', pin: pin});
 }
 
@@ -81,7 +80,7 @@ function handleMessage(msg) {
     if (msg.type === 'rejoined') {
         rejoinPending = false;
         rejoinAttempts = 0;
-        lastSeq = msg.state.seq || 0;
+        events.reset(msg.state.seq || 0);
         showHostNotice('');
         currentPin = msg.pin;
         currentUsername = msg.state.username;
@@ -113,12 +112,16 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'event') {
-        const ev = msg.event;
-        if (typeof ev.seq === 'number') {
-            if (ev.seq <= lastSeq) return;
-            lastSeq = ev.seq;
-        }
-        handleEvent(ev);
+        events.receive(msg.event);
+        return;
+    }
+    if (msg.type === 'events') {
+        events.receiveMissing(msg.events);
+        return;
+    }
+    if (msg.type === 'resync_required') {
+        // Gli eventi persi non sono piu' disponibili: si riparte dallo stato.
+        location.reload();
     }
 }
 

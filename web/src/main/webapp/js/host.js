@@ -19,16 +19,16 @@ let roomVisibility = 'public';
 let cancelPending = false;
 let hostRejoinPending = false;
 const HOST_PIN_KEY = 'qa_host_pin';
-// Vedi play.js: deduplica degli eventi e rientro ritentato durante il
-// ripristino della stanza su un altro nodo.
-let lastSeq = 0;
+// Vedi play.js: eventi in ordine (hold-back queue) e rientro ritentato
+// durante il ripristino della stanza su un altro nodo.
+const events = new EventSequencer(ws, handleEvent);
 const REJOIN_RETRY_MS = 1000;
 const MAX_REJOIN_ATTEMPTS = 20;
 let rejoinAttempts = 0;
 
 function sendHostRejoin(pin) {
     hostRejoinPending = true;
-    lastSeq = 0;
+    events.reset(0);
     ws.send({action: 'host_rejoin', pin: pin});
 }
 
@@ -93,7 +93,7 @@ function handleMessage(msg) {
     if (msg.type === 'host_rejoined') {
         hostRejoinPending = false;
         rejoinAttempts = 0;
-        lastSeq = msg.state.seq || 0;
+        events.reset(msg.state.seq || 0);
         restoreHostState(msg.state);
         return;
     }
@@ -106,7 +106,7 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'room_created') {
-        lastSeq = 0;
+        events.reset(0);
         showWaitingRoom(msg.pin, msg.visibility);
         return;
     }
@@ -147,12 +147,15 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'event') {
-        const ev = msg.event;
-        if (typeof ev.seq === 'number') {
-            if (ev.seq <= lastSeq) return;
-            lastSeq = ev.seq;
-        }
-        handleEvent(ev);
+        events.receive(msg.event);
+        return;
+    }
+    if (msg.type === 'events') {
+        events.receiveMissing(msg.events);
+        return;
+    }
+    if (msg.type === 'resync_required') {
+        location.reload();
     }
 }
 
@@ -333,6 +336,7 @@ function showResults(ev) {
     document.getElementById('correctAnswer').textContent =
         `Risposta corretta: ${ev.correct}`;
     renderLeaderboard(ev.leaderboard);
+    showSuspicious(ev.suspicious || []);
     const nextBtn = document.getElementById('nextBtn');
     if (ev.has_next_round === false) {
         nextBtn.style.display = 'none';
@@ -340,6 +344,23 @@ function showResults(ev) {
         nextBtn.style.display = 'inline-block';
         nextBtn.textContent = 'Prossimo round';
     }
+}
+
+// Giocatori il cui tempo di risposta dichiarato non e' coerente con quello
+// misurato dal server: per il punteggio e' stato usato il tempo del server.
+function showSuspicious(usernames) {
+    let el = document.getElementById('suspiciousInfo');
+    if (!el) {
+        el = document.createElement('p');
+        el.id = 'suspiciousInfo';
+        el.className = 'suspicious-info';
+        const anchor = document.getElementById('leaderboard');
+        anchor.parentNode.insertBefore(el, anchor.nextSibling);
+    }
+    el.textContent = usernames.length === 0 ? ''
+        : '⚠ Tempi di risposta sospetti (usato il tempo del server): '
+            + usernames.join(', ');
+    el.style.display = usernames.length === 0 ? 'none' : 'block';
 }
 
 function showFinal(ev) {

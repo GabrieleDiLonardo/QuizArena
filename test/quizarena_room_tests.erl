@@ -22,7 +22,11 @@ room_test_() ->
              {timeout, 30, fun() -> host_grace_expires_cancels(QuizIds) end},
              {timeout, 30, fun() -> host_grace_after_last_round_saves(QuizIds) end},
              {timeout, 30, fun() -> concurrent_room_creation(QuizIds) end},
-             {timeout, 30, fun() -> orphan_sessions_are_swept(QuizIds) end}
+             {timeout, 30, fun() -> orphan_sessions_are_swept(QuizIds) end},
+             {timeout, 30, fun() -> late_answer_within_grace(QuizIds) end},
+             {timeout, 30, fun() -> suspicious_time_is_flagged(QuizIds) end},
+             {timeout, 30, fun() -> missed_events_are_replayed(QuizIds) end},
+             {timeout, 30, fun() -> lobby_is_pushed(QuizIds) end}
          ]}
      end}.
 
@@ -52,7 +56,15 @@ setup() ->
             #{text => "Q1", answers => ["a", "b"], correct => "a",
               time_limit => 2000}
         ]}),
-    #{two => TwoRounds, one => OneRound, dir => Dir}.
+    {ok, Short} = quizarena_db:create_quiz(?HOST, #{
+        title => "Quiz lampo",
+        description => "un secondo",
+        visibility => public,
+        questions => [
+            #{text => "Q1", answers => ["a", "b"], correct => "a",
+              time_limit => 1000}
+        ]}),
+    #{two => TwoRounds, one => OneRound, short => Short, dir => Dir}.
 
 cleanup(#{dir := Dir}) ->
     application:stop(quizarena),
@@ -221,6 +233,77 @@ orphan_sessions_are_swept(#{two := QuizId}) ->
     ?assertMatch({ok, #{status := cancelled}},
                  quizarena_db:get_session(SessionId)),
     ?assertEqual([], mnesia:dirty_read(session_pins, "000001")).
+
+%% Il client ha risposto in tempo (950 ms su 1000) ma la risposta arriva al
+%% server dopo la scadenza: entro il margine viene accettata e conteggiata.
+late_answer_within_grace(#{short := QuizId}) ->
+    {H, Pin, [P1]} = started_game(QuizId, ["p1"]),
+    ?assertEqual({ok, ok}, req(H, {next_round, Pin})),
+    expect_event(P1, round_started),
+    timer:sleep(1200),
+    ?assertEqual({ok, ok}, req(P1, {answer, Pin, 1, "a", 950, 300})),
+    #{leaderboard := [{"p1", 50}], suspicious := []} =
+        expect_event(P1, round_closed),
+    ?assertEqual({ok, ok}, req(H, {cancel_room, Pin})),
+    stop_all([H, P1]).
+
+%% Il client dichiara 0 ms ma la risposta arriva dopo un secondo e mezzo:
+%% vale il tempo del server e il giocatore viene segnalato all'host.
+suspicious_time_is_flagged(#{two := QuizId}) ->
+    {H, Pin, [P1, P2]} = started_game(QuizId, ["p1", "p2"]),
+    ?assertEqual({ok, ok}, req(H, {next_round, Pin})),
+    expect_event(P1, round_started),
+    timer:sleep(1500),
+    ?assertEqual({ok, ok}, req(P1, {answer, Pin, 1, "a", 0, 40})),
+    ?assertEqual({ok, ok}, req(P2, {answer, Pin, 1, "a", 1450, 40})),
+    #{suspicious := ["p1"], leaderboard := Leaderboard} =
+        expect_event(H, round_closed),
+    {"p1", Score1} = lists:keyfind("p1", 1, Leaderboard),
+    ?assert(Score1 < 1000),
+    ?assertEqual({ok, ok}, req(H, {cancel_room, Pin})),
+    stop_all([H, P1, P2]).
+
+%% Un client che si accorge di un buco nella numerazione chiede alla room
+%% gli eventi mancanti, che arrivano in ordine.
+missed_events_are_replayed(#{two := QuizId}) ->
+    {H, Pin, [P1]} = started_game(QuizId, ["p1"]),
+    ?assertEqual({ok, ok}, req(H, {next_round, Pin})),
+    #{seq := RoundSeq} = expect_event(P1, round_started),
+    {ok, Events} = req(P1, {get_events_since, Pin, RoundSeq - 2}),
+    ?assertEqual([RoundSeq - 1, RoundSeq], [S || #{seq := S} <- Events]),
+    ?assertMatch([#{type := game_started}, #{type := round_started}], Events),
+    ?assertEqual({error, {too_far_behind, RoundSeq}},
+                 req(P1, {get_events_since, Pin, -5})),
+    ?assertEqual({ok, ok}, req(H, {cancel_room, Pin})),
+    stop_all([H, P1]).
+
+%% Chi guarda la lobby riceve la lista aggiornata quando una stanza pubblica
+%% viene aperta, cambia stato o chiude, senza doverla richiedere.
+lobby_is_pushed(#{two := QuizId}) ->
+    Viewer = client(),
+    {ok, _Rooms} = req(Viewer, subscribe_lobby),
+    H = client(),
+    {ok, Pin} = req(H, {create_room, QuizId, ?HOST, public}),
+    #{rooms := Rooms1} = expect_lobby(Viewer, fun(Rooms) ->
+        lists:any(fun(#{pin := P}) -> P =:= Pin end, Rooms)
+    end),
+    [#{status := waiting}] = [R || #{pin := P} = R <- Rooms1, P =:= Pin],
+    ?assertEqual({ok, ok}, req(H, {cancel_room, Pin})),
+    expect_lobby(Viewer, fun(Rooms) ->
+        not lists:any(fun(#{pin := P}) -> P =:= Pin end, Rooms)
+    end),
+    stop_all([H, Viewer]).
+
+expect_lobby(Client, Accept) ->
+    receive
+        {event, Client, #{type := lobby_update, rooms := Rooms} = Event} ->
+            case Accept(Rooms) of
+                true -> Event;
+                false -> expect_lobby(Client, Accept)
+            end
+    after 2000 ->
+        error(missing_lobby_update)
+    end.
 
 %% ---------- Helper ----------
 

@@ -83,6 +83,8 @@ handle_request({cancel_room, Pin}, JavaPid) when is_list(Pin) ->
     room_gen_server:cancel(Pin, JavaPid);
 handle_request(list_rooms, _JavaPid) ->
     quizarena_db:list_public_rooms();
+handle_request(subscribe_lobby, JavaPid) ->
+    quizarena_lobby:subscribe(JavaPid);
 
 %% Gioco
 handle_request({join, Pin, Username}, JavaPid)

@@ -9,6 +9,9 @@ Progetto per il corso di *Distributed Systems and Middleware Technologies* (AA 2
 - **Quiz**: CRUD completo dal browser, visibilità pubblica/privata, owner check lato server.
 - **Partita**: PIN univoco, stanze pubbliche/private, lobby con auto-refresh, round con timer, punteggio per tempo, classifica per round e finale.
 - **Riconnessione**: rejoin automatico del player con state replay, monitoraggio disconnessioni.
+- **Tempi di risposta**: tempo misurato dal client e verificato dal server con l'RTT stimato da più sonde (Cristian, minimo dei campioni); margine di 500 ms sulla scadenza per le risposte in viaggio; tempi sospetti segnalati all'host.
+- **Ordine degli eventi**: numerazione dalla room (unico sequencer) e hold-back queue nel client, con recupero degli eventi mancanti (`events_since`).
+- **Lobby in push**: la lista delle stanze arriva al browser quando cambia (eventi Mnesia), senza polling.
 - **Storico**: partite giocate e condotte come host, con titolo del quiz, data, partecipanti, posizione finale e punteggio.
 - **Distribuzione**: core Erlang/OTP + Mnesia, web tier Tomcat + WebSocket, bridge Jinterface.
 

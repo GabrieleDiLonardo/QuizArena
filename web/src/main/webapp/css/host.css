@@ -171,3 +171,12 @@
 .public-quizzes-details summary:hover {
     color: #6353c9;
 }
+/* ===== Tempi di risposta sospetti ===== */
+.suspicious-info {
+    padding: 8px 12px;
+    margin: 8px 0;
+    background: #fff6e0;
+    border: 1px solid #f0c36d;
+    border-radius: 8px;
+    color: #7a5a00;
+}

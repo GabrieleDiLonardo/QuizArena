@@ -9,8 +9,17 @@
 -define(POINTS_BASE, 1000).
 -define(ROUND_TIME_LIMIT, 60000).
 -define(MAX_EVENT_LOG, 200).
+%% Controllo dei tempi di risposta (approccio simile a Cristian): il tempo
+%% misurato dal client sul proprio orologio monotono e' accettato se si
+%% discosta dal tempo misurato dal server di al piu' questa tolleranza piu'
+%% l'RTT del client, stimato dal web tier con piu' sonde (il minimo).
 -define(ANSWER_TIME_TOLERANCE_MS, 1000).
--define(MAX_ACCEPTED_RTT_MS, 2000).
+%% Limite all'RTT dichiarato: un client che ritarda di proposito le sonde
+%% non puo' allargare la tolleranza oltre questo valore.
+-define(MAX_ACCEPTED_RTT_MS, 1000).
+%% Margine dopo la scadenza del round: una risposta data in tempo dal
+%% client ma ancora in viaggio sulla rete non viene scartata.
+-define(ANSWER_GRACE_MS, 500).
 %% Tempo concesso all'host per riconnettersi prima di chiudere la stanza
 %% (sovrascrivibile con la variabile d'ambiente host_grace_ms).
 -define(DEFAULT_HOST_GRACE_MS, 30000).
@@ -28,7 +37,10 @@
     answered = false,
     answer_time,
     chosen_answer,
-    connected = true
+    connected = true,
+    %% Tempo di risposta del round corrente non coerente con quello misurato
+    %% dal server: viene segnalato all'host alla chiusura del round.
+    suspicious = false
 }).
 
 %% ---------- API pubblica ----------
@@ -205,7 +217,7 @@ handle_call({get_events_since, SinceSeq}, _From, State) ->
             OldestSeq = lists:min([S || {S, _} <- Log]),
             case SinceSeq < OldestSeq - 1 of
                 true ->
-                    {reply, {too_far_behind, CurrentSeq}, State};
+                    {reply, {error, {too_far_behind, CurrentSeq}}, State};
                 false ->
                     Sorted = lists:keysort(1,
                              [{S, E} || {S, E} <- Log, S > SinceSeq]),
@@ -267,14 +279,15 @@ handle_call({answer, PlayerPid, Round, Answer, ClientElapsedMs, RttMs},
                                 - maps:get(round_start_time, State),
                             TimeLimitMs = maps:get(
                                 time_limit, maps:get(question, State)),
-                            ElapsedMs = validated_answer_time(
+                            {ElapsedMs, Suspicious} = validated_answer_time(
                                 ClientElapsedMs, ServerElapsedMs,
                                 RttMs, TimeLimitMs,
                                 maps:get(pin, State), Username),
                             UpdatedPlayer = Player#player{
                                 answered = true,
                                 answer_time = ElapsedMs,
-                                chosen_answer = Answer
+                                chosen_answer = Answer,
+                                suspicious = Suspicious
                             },
                             NewPlayers = maps:put(Username, UpdatedPlayer, Players),
                             State1 = State#{players => NewPlayers},
@@ -572,7 +585,8 @@ open_next_round(State) ->
             ResetPlayers = maps:map(fun(_Username, P) ->
                 P#player{answered = false,
                          answer_time = undefined,
-                         chosen_answer = undefined}
+                         chosen_answer = undefined,
+                         suspicious = false}
             end, Players),
             Q = lists:nth(Round, Questions),
             TimeLimit = maps:get(time_limit, Q, ?ROUND_TIME_LIMIT),
@@ -587,7 +601,7 @@ open_next_round(State) ->
             Now = erlang:monotonic_time(millisecond),
             Deadline = Now + TimeLimit,
             TimerRef = erlang:send_after(
-                TimeLimit,
+                TimeLimit + ?ANSWER_GRACE_MS,
                 self(),
                 {round_timeout, Round}
             ),
@@ -813,7 +827,8 @@ relink_clients(State) ->
 restart_round_timer(#{status := round_open, current_round := Round,
                       round_deadline := Deadline} = State) ->
     Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
-    TimerRef = erlang:send_after(Remaining, self(), {round_timeout, Round}),
+    TimerRef = erlang:send_after(Remaining + ?ANSWER_GRACE_MS, self(),
+                                 {round_timeout, Round}),
     State#{timer_ref => TimerRef};
 restart_round_timer(State) ->
     State.
@@ -854,15 +869,21 @@ close_round(State) ->
 
     Leaderboard = build_leaderboard(UpdatedPlayers),
     HasNextRound = Round < length(maps:get(quiz_questions, State1)),
+    Suspicious = lists:sort([U || {U, #player{suspicious = true}}
+                                      <- maps:to_list(UpdatedPlayers)]),
     State2 = State1#{players => UpdatedPlayers, status => round_closed},
     emit_event(State2, #{
         type => round_closed,
         round => Round,
         correct => Correct,
         has_next_round => HasNextRound,
-        leaderboard => Leaderboard
+        leaderboard => Leaderboard,
+        suspicious => Suspicious
     }).
 
+%% Restituisce {TempoUsatoPerIlPunteggio, Sospetto}. Il tempo del client e'
+%% piu' preciso (non include la latenza di rete); se non e' credibile si usa
+%% quello del server, che penalizza il client della latenza.
 validated_answer_time(ClientElapsedMs, ServerElapsedMs, RttMs,
                       TimeLimitMs, Pin, Username) ->
     AcceptedRttMs = min(RttMs, ?MAX_ACCEPTED_RTT_MS),
@@ -871,13 +892,13 @@ validated_answer_time(ClientElapsedMs, ServerElapsedMs, RttMs,
     case ClientElapsedMs =< TimeLimitMs
          andalso DifferenceMs =< AllowedDifferenceMs of
         true ->
-            ClientElapsedMs;
+            {ClientElapsedMs, false};
         false ->
             logger:notice(
                 "[room ~s] suspicious answer time from ~s: "
                 "client=~p ms server=~p ms rtt=~p ms",
                 [Pin, Username, ClientElapsedMs, ServerElapsedMs, RttMs]),
-            max(0, ServerElapsedMs)
+            {max(0, ServerElapsedMs), true}
     end.
 
 compute_score(ElapsedMs, TimeLimitMs) ->

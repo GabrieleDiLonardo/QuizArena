@@ -14,12 +14,18 @@ document.getElementById('refreshBtn').onclick = () => {
 function handleMessage(msg) {
     log('← ' + JSON.stringify(msg));
 
-    if (msg.type === 'connected') {
-        ws.send({action: 'list_rooms'});
+    // La lobby si iscrive agli aggiornamenti: il server invia la lista
+    // delle stanze ogni volta che cambia, senza richieste periodiche.
+    if (msg.type === 'connected' || msg.type === 'lobby_resubscribe') {
+        ws.send({action: 'subscribe_lobby'});
         return;
     }
     if (msg.type === 'rooms') {
         renderRooms(msg.rooms);
+        return;
+    }
+    if (msg.type === 'event' && msg.event.type === 'lobby_update') {
+        renderRooms(msg.event.rooms);
         return;
     }
     if (msg.type === 'error') {
@@ -63,8 +69,3 @@ function escapeHtml(s) {
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
 }
-
-// Auto-refresh ogni 5 secondi
-setInterval(() => {
-    if (ws.connected) ws.send({action: 'list_rooms'});
-}, 5000);

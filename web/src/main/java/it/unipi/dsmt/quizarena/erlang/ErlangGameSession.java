@@ -312,16 +312,48 @@ public class ErlangGameSession implements AutoCloseable {
 
     public java.util.List<Object> listRooms(long timeoutMillis)
             throws IOException, ErlangServiceException {
-        OtpErlangObject result = sendRequest(
-                new OtpErlangAtom("list_rooms"), timeoutMillis);
+        return decodeList(sendRequest(
+                new OtpErlangAtom("list_rooms"), timeoutMillis));
+    }
+
+    // Iscrive la mailbox agli aggiornamenti della lobby e restituisce la
+    // lista corrente; le successive arrivano come eventi lobby_update.
+    public java.util.List<Object> subscribeLobby(long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        return decodeList(sendRequest(
+                new OtpErlangAtom("subscribe_lobby"), timeoutMillis));
+    }
+
+    // Eventi della stanza con numero di sequenza maggiore di sinceSeq, in
+    // ordine. Se la room non li conserva piu' l'errore e' too_far_behind.
+    public java.util.List<Object> eventsSince(
+            String pin, long sinceSeq, long timeoutMillis
+    ) throws IOException, ErlangServiceException {
+        requireText(pin, "pin");
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangAtom("get_events_since"),
+            new OtpErlangString(pin),
+            new OtpErlangLong(sinceSeq)
+        });
+        return decodeList(sendRequest(request, timeoutMillis));
+    }
+
+    private static java.util.List<Object> decodeList(OtpErlangObject result)
+            throws IOException, ErlangServiceException {
         if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
-            throw new IOException("Malformed result from list_rooms");
+            throw new IOException("Malformed result from Erlang gateway");
         }
         if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
-            throw new ErlangServiceException(t.elementAt(1).toString());
+            OtpErlangObject reason = t.elementAt(1);
+            if (reason instanceof OtpErlangTuple reasonTuple
+                    && reasonTuple.arity() > 0
+                    && reasonTuple.elementAt(0) instanceof OtpErlangAtom tag) {
+                throw new ErlangServiceException(tag.atomValue());
+            }
+            throw new ErlangServiceException(reason.toString());
         }
         if (!(t.elementAt(1) instanceof OtpErlangList list)) {
-            throw new IOException("Expected a list of rooms");
+            throw new IOException("Expected a list from Erlang gateway");
         }
         java.util.List<Object> out = new java.util.ArrayList<>();
         for (OtpErlangObject item : list) {
