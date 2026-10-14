@@ -21,3 +21,4 @@ logs
 rebar3.crashdump
 *~
 target/
+data/

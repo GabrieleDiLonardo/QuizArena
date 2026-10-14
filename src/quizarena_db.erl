@@ -17,76 +17,170 @@
          list_browsable_quizzes/1,
          clear_quizzes/0, seed_quizzes/0, seed_extended_quizzes/0]).
 
-init() ->
-    case mnesia:create_schema([node() | nodes()]) of
-        ok -> ok;
-        {error, {_, {already_exists, _}}} -> ok
-    end,
-    mnesia:start(),
-    timer:sleep(2000),
+-define(JOIN_ATTEMPTS, 60).
+-define(JOIN_RETRY_MS, 2000).
+-define(TABLE_LOAD_TIMEOUT_MS, 30000).
 
+%% ---------- Bootstrap del cluster Mnesia ----------
+%%
+%% Mnesia e' gia' avviata come dipendenza dell'applicazione. Tre casi:
+%%   - schema gia' su disco: il nodo si riaggancia da solo agli altri nodi
+%%     dello schema non appena la distribuzione Erlang li collega;
+%%   - nodo nuovo con un altro nodo del cluster attivo: entra nel suo schema
+%%     (extra_db_nodes) e si crea le proprie copie delle tabelle;
+%%   - primo avvio assoluto: lo schema lo crea solo il seed, gli altri
+%%     attendono che sia disponibile. Cosi' due nodi avviati insieme non
+%%     creano schemi separati e incompatibili.
+init() ->
+    ok = join_cluster(?JOIN_ATTEMPTS),
+    ok = ensure_disc_schema(),
+    ok = ensure_tables(),
+    ok = wait_for_tables(),
+    RunningNodes = mnesia:system_info(running_db_nodes),
+    io:format("Mnesia schema ready on ~p~n", [RunningNodes]),
+    %% Con altri nodi attivi le stanze orfane sono compito del leader.
+    case RunningNodes of
+        [_OnlyThisNode] -> sweep_orphan_sessions();
+        _ -> ok
+    end,
+    ok.
+
+join_cluster(AttemptsLeft) ->
+    case mnesia:system_info(use_dir) of
+        true ->
+            ok;
+        false ->
+            case running_peers() of
+                [_ | _] = Peers ->
+                    {ok, _} = mnesia:change_config(extra_db_nodes, Peers),
+                    ok;
+                [] ->
+                    case node() =:= quizarena_cluster:seed() of
+                        true ->
+                            ok;
+                        false when AttemptsLeft > 0 ->
+                            io:format("Waiting for the Mnesia seed ~p~n",
+                                      [quizarena_cluster:seed()]),
+                            timer:sleep(?JOIN_RETRY_MS),
+                            quizarena_cluster:connect(),
+                            join_cluster(AttemptsLeft - 1);
+                        false ->
+                            {error, seed_unreachable}
+                    end
+            end
+    end.
+
+running_peers() ->
+    [Node || Node <- quizarena_cluster:others(),
+             lists:member(Node, nodes()),
+             rpc:call(Node, mnesia, system_info, [is_running]) =:= yes].
+
+ensure_disc_schema() ->
     case mnesia:change_table_copy_type(schema, node(), disc_copies) of
         {atomic, ok} -> ok;
-        {aborted, {already_exists, schema, _, _}} -> ok;
-        {aborted, Reason} -> io:format("Schema change failed: ~p~n", [Reason])
-    end,
+        {aborted, {already_exists, schema, _, disc_copies}} -> ok;
+        {aborted, Reason} -> {error, {schema_copy_failed, Reason}}
+    end.
 
-    Nodes = [node() | nodes()],
+table_specs() ->
+    [{users, disc_copies,
+      [{attributes, [username, credentials]}]},
+     {quizzes, disc_copies,
+      [{attributes, [id, owner, title, description, visibility]},
+       {index, [owner]}]},
+     {questions, disc_copies,
+      [{attributes, [id, quiz_id, position, text, answers, correct,
+                     time_limit]},
+       {index, [quiz_id]}]},
+     {sessions, disc_copies,
+      [{attributes, [id, pin, quiz_id, quiz_title, host, status,
+                     started_at, finished_at]}]},
+     {results, disc_copies,
+      [{type, bag},
+       {attributes, [session_id, user_id, score, finished_at]},
+       {index, [user_id]}]},
+     {session_pins, disc_copies,
+      [{attributes, [pin, session_id]}]},
+     {session_questions, disc_copies,
+      [{attributes, [key, text, answers, correct, time_limit]}]},
+     %% Registro delle stanze attive, letto dalla lobby. Vive solo in RAM:
+     %% ogni riga e' scritta esclusivamente dalla room che la possiede.
+     {open_rooms, ram_copies,
+      [{attributes, [pin, session_id, quiz_title, host, visibility,
+                     status, num_players, num_questions,
+                     current_round, node]}]},
+     %% Stato delle partite in corso, replicato per il ripristino dopo la
+     %% caduta del nodo che le ospita.
+     {room_snapshots, ram_copies,
+      [{attributes, [pin, owner_node, snapshot]}]}].
 
-    create_table(users,
-        [{disc_copies, Nodes},
-         {attributes, [username, credentials]}]),
-
-    create_table(quizzes,
-        [{disc_copies, Nodes},
-         {attributes, [id, owner, title, description, visibility]},
-         {index, [owner]}]),
-
-    create_table(questions,
-        [{disc_copies, Nodes},
-         {attributes, [id, quiz_id, position, text, answers, correct,
-                       time_limit]},
-         {index, [quiz_id]}]),
-
-    create_table(sessions,
-        [{disc_copies, Nodes},
-         {attributes, [id, pin, quiz_id, quiz_title, host, status,
-                       started_at, finished_at]}]),
-
-    create_table(results,
-        [{disc_copies, Nodes},
-         {type, bag},
-         {attributes, [session_id, user_id, score, finished_at]},
-         {index, [user_id]}]),
-
-    create_table(session_pins,
-        [{disc_copies, Nodes},
-         {attributes, [pin, session_id]}]),
-
-    create_table(session_questions,
-        [{disc_copies, Nodes},
-         {attributes, [key, text, answers, correct, time_limit]}]),
-
-    %% Registro delle stanze attive, letto dalla lobby. Vive solo in RAM:
-    %% ogni riga e' scritta esclusivamente dalla room che la possiede.
-    create_table(open_rooms,
-        [{ram_copies, Nodes},
-         {attributes, [pin, session_id, quiz_title, host, visibility,
-                       status, num_players, num_questions,
-                       current_round, node]}]),
-
-    Tables = [users, quizzes, questions, sessions, results,
-              session_pins, session_questions, open_rooms],
-    ok = mnesia:wait_for_tables(Tables, 30000),
-    io:format("Mnesia schema ready on ~p~n", [Nodes]),
-    sweep_orphan_sessions(),
+%% Crea le tabelle mancanti su tutti i nodi attivi e garantisce che il
+%% nodo locale abbia la propria copia di ognuna.
+ensure_tables() ->
+    Existing = mnesia:system_info(tables),
+    lists:foreach(
+        fun({Name, CopyType, Options}) ->
+            case lists:member(Name, Existing) of
+                false ->
+                    Nodes = creation_nodes(CopyType),
+                    create_table(Name, [{CopyType, Nodes} | Options]);
+                true ->
+                    ensure_local_copy(Name, CopyType)
+            end
+        end,
+        table_specs()),
     ok.
+
+%% Una copia su disco richiede che il nodo abbia gia' lo schema su disco:
+%% un nodo appena entrato nel cluster si aggiunge le copie da solo dopo
+%% aver convertito il proprio schema (ensure_local_copy/2).
+creation_nodes(disc_copies) ->
+    DiscSchemaNodes = mnesia:table_info(schema, disc_copies),
+    [N || N <- mnesia:system_info(running_db_nodes),
+          lists:member(N, DiscSchemaNodes)];
+creation_nodes(ram_copies) ->
+    [node()].
 
 create_table(Name, Args) ->
     case mnesia:create_table(Name, Args) of
         {atomic, ok} -> ok;
-        {aborted, {already_exists, Name}} -> ok;
+        {aborted, {already_exists, Name}} -> ensure_local_copy(Name, copy_type(Args));
         {aborted, Reason} -> erlang:error({mnesia_create_failed, Name, Reason})
+    end.
+
+copy_type(Args) ->
+    hd([Type || {Type, _} <- Args,
+                lists:member(Type, [disc_copies, ram_copies])]).
+
+ensure_local_copy(Name, CopyType) ->
+    Copies = mnesia:table_info(Name, disc_copies)
+        ++ mnesia:table_info(Name, ram_copies)
+        ++ mnesia:table_info(Name, disc_only_copies),
+    case lists:member(node(), Copies) of
+        true ->
+            ok;
+        false ->
+            case mnesia:add_table_copy(Name, node(), CopyType) of
+                {atomic, ok} -> ok;
+                {aborted, {already_exists, Name, _}} -> ok;
+                {aborted, Reason} ->
+                    erlang:error({mnesia_add_copy_failed, Name, Reason})
+            end
+    end.
+
+%% Al riavvio Mnesia carica da disco una tabella solo se sa che la copia
+%% locale e' la piu' recente; se gli altri nodi non tornano entro il
+%% timeout il caricamento viene forzato (va segnalato: si perdono le
+%% eventuali scritture fatte altrove dopo la caduta di questo nodo).
+wait_for_tables() ->
+    Tables = [Name || {Name, _, _} <- table_specs()],
+    case mnesia:wait_for_tables(Tables, ?TABLE_LOAD_TIMEOUT_MS) of
+        ok ->
+            ok;
+        {timeout, Missing} ->
+            io:format("Forcing load of tables ~p~n", [Missing]),
+            [yes = mnesia:force_load_table(T) || T <- Missing],
+            ok
     end.
 
 %% ---------- Utenti ----------

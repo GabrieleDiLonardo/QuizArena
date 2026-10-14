@@ -1,0 +1,3 @@
+-sname ${NODE_NAME}
+-setcookie ${ERLANG_COOKIE}
++K true

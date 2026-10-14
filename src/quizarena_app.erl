@@ -4,9 +4,7 @@
 -export([start/2, stop/1]).
 
 start(_Type, _Args) ->
-    Nodes = ['erlang2@erlang2', 'erlang3@erlang3'],
-    [net_adm:ping(N) || N <- Nodes],
-    timer:sleep(500),
+    ok = quizarena_cluster:connect(),
     ok = quizarena_db:init(),
     quizarena_sup:start_link().
 
