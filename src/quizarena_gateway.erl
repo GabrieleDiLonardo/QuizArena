@@ -86,6 +86,13 @@ handle_request(list_rooms, _JavaPid) ->
 handle_request(subscribe_lobby, JavaPid) ->
     quizarena_lobby:subscribe(JavaPid);
 
+%% Logout
+handle_request({revoke_token, Jti, ExpiresAt}, _JavaPid)
+  when is_list(Jti), is_integer(ExpiresAt) ->
+    quizarena_db:revoke_token(Jti, ExpiresAt);
+handle_request(subscribe_revocations, JavaPid) ->
+    quizarena_revocations:subscribe(JavaPid);
+
 %% Gioco
 handle_request({join, Pin, Username}, JavaPid)
   when is_list(Pin), is_list(Username) ->

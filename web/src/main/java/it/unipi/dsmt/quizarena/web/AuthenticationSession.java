@@ -17,6 +17,13 @@ public final class AuthenticationSession {
             AuthenticationSession.class.getName() + ".username";
     private static final String WEB_SOCKETS_ATTRIBUTE =
             AuthenticationSession.class.getName() + ".webSockets";
+    private static final String TOKEN_ATTRIBUTE =
+            AuthenticationSession.class.getName() + ".token";
+
+    // Sessioni di questo Tomcat per token di login: alla revoca del token
+    // (logout, anche ricevuto da un altro Tomcat) vengono invalidate.
+    private static final ConcurrentHashMap<String, Set<HttpSession>>
+            SESSIONS_BY_TOKEN = new ConcurrentHashMap<>();
 
     private AuthenticationSession() {
     }
@@ -28,7 +35,8 @@ public final class AuthenticationSession {
 
         try {
             Object value = session.getAttribute(USERNAME_ATTRIBUTE);
-            if (value instanceof String username && !username.isBlank()) {
+            if (value instanceof String username && !username.isBlank()
+                    && !TokenRevocations.isRevoked(jti(session))) {
                 return username;
             }
         } catch (IllegalStateException exception) {
@@ -46,12 +54,62 @@ public final class AuthenticationSession {
         if (username != null) {
             return username;
         }
-        String fromCookie = AuthToken.usernameFrom(request);
+        AuthToken.Verified fromCookie = AuthToken.from(request);
         if (fromCookie == null) {
             return null;
         }
-        request.getSession(true).setAttribute(USERNAME_ATTRIBUTE, fromCookie);
-        return fromCookie;
+        bind(request.getSession(true), fromCookie);
+        return fromCookie.username();
+    }
+
+    // Login della sessione: utente e token che lo autentica.
+    public static void bind(HttpSession session, AuthToken.Verified token) {
+        session.setAttribute(USERNAME_ATTRIBUTE, token.username());
+        session.setAttribute(TOKEN_ATTRIBUTE, new TokenBinding(token));
+    }
+
+    // Token che autentica la sessione, oppure quello del cookie.
+    public static AuthToken.Verified token(HttpServletRequest request) {
+        HttpSession session = request.getSession(false);
+        if (session != null) {
+            try {
+                if (session.getAttribute(TOKEN_ATTRIBUTE)
+                        instanceof TokenBinding binding) {
+                    return binding.token;
+                }
+            } catch (IllegalStateException exception) {
+                // Sessione gia' invalidata.
+            }
+        }
+        return AuthToken.from(request);
+    }
+
+    public static String jti(HttpSession session) {
+        if (session == null) {
+            return null;
+        }
+        try {
+            return session.getAttribute(TOKEN_ATTRIBUTE)
+                    instanceof TokenBinding binding
+                    ? binding.token.jti()
+                    : null;
+        } catch (IllegalStateException exception) {
+            return null;
+        }
+    }
+
+    public static void invalidateSessions(String jti) {
+        Set<HttpSession> sessions = SESSIONS_BY_TOKEN.remove(jti);
+        if (sessions == null) {
+            return;
+        }
+        for (HttpSession session : sessions) {
+            try {
+                session.invalidate();
+            } catch (IllegalStateException exception) {
+                // Gia' invalidata.
+            }
+        }
     }
 
     public static boolean registerWebSocket(
@@ -98,6 +156,33 @@ public final class AuthenticationSession {
             }
         } catch (IllegalStateException exception) {
             // La sessione HTTP è già stata invalidata.
+        }
+    }
+
+    // Registra la sessione per token finche' resta associata al login.
+    private static final class TokenBinding
+            implements HttpSessionBindingListener {
+
+        private final AuthToken.Verified token;
+
+        private TokenBinding(AuthToken.Verified token) {
+            this.token = token;
+        }
+
+        @Override
+        public void valueBound(HttpSessionBindingEvent event) {
+            SESSIONS_BY_TOKEN
+                    .computeIfAbsent(token.jti(),
+                            key -> ConcurrentHashMap.newKeySet())
+                    .add(event.getSession());
+        }
+
+        @Override
+        public void valueUnbound(HttpSessionBindingEvent event) {
+            SESSIONS_BY_TOKEN.computeIfPresent(token.jti(), (key, sessions) -> {
+                sessions.remove(event.getSession());
+                return sessions.isEmpty() ? null : sessions;
+            });
         }
     }
 

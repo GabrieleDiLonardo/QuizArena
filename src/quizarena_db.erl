@@ -11,6 +11,8 @@
          publish_room/1, unpublish_room/1, list_public_rooms/0,
          %% Snapshot delle partite in corso
          save_snapshot/2, delete_snapshot/1, list_snapshots/0,
+         %% Token di login revocati (logout)
+         revoke_token/2, list_revoked_tokens/0,
          %% Storico
          get_history/1,
          %% Quiz CRUD
@@ -111,6 +113,10 @@ table_specs() ->
       [{attributes, [pin, session_id, quiz_title, host, visibility,
                      status, num_players, num_questions,
                      current_round, node]}]},
+     %% Token di login revocati con il logout, fino alla loro scadenza:
+     %% ogni Tomcat del cluster li rifiuta.
+     {revoked_tokens, disc_copies,
+      [{attributes, [jti, expires_at]}]},
      %% Stato delle partite in corso, replicato per il ripristino dopo la
      %% caduta del nodo che le ospita.
      {room_snapshots, ram_copies,
@@ -434,6 +440,27 @@ list_public_rooms() ->
             num_questions => NumQuestions, current_round => Round}
           || {open_rooms, Pin, _SessionId, Title, Host, _Visibility, Status,
               NumPlayers, NumQuestions, Round, _Node} <- Rows]}.
+
+%% ---------- Token revocati ----------
+
+%% Registra la revoca di un token (ExpiresAt in millisecondi) e rimuove le
+%% revoche di token ormai scaduti, che non servono piu'.
+revoke_token(Jti, ExpiresAt) when is_list(Jti), is_integer(ExpiresAt) ->
+    Now = erlang:system_time(millisecond),
+    F = fun() ->
+        Expired = mnesia:select(revoked_tokens,
+            [{{revoked_tokens, '$1', '$2'}, [{'<', '$2', Now}], ['$1']}]),
+        [mnesia:delete({revoked_tokens, J}) || J <- Expired],
+        mnesia:write({revoked_tokens, Jti, ExpiresAt}),
+        ok
+    end,
+    transaction_result(F).
+
+list_revoked_tokens() ->
+    Now = erlang:system_time(millisecond),
+    {ok, [Jti || {revoked_tokens, Jti, ExpiresAt}
+                     <- mnesia:dirty_match_object({revoked_tokens, '_', '_'}),
+                 ExpiresAt >= Now]}.
 
 %% ---------- Snapshot delle partite in corso ----------
 

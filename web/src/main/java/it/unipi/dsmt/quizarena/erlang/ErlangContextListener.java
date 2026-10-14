@@ -6,6 +6,7 @@ import java.util.List;
 
 import it.unipi.dsmt.quizarena.web.AuthToken;
 import it.unipi.dsmt.quizarena.web.GameWebSocketEndpoint;
+import it.unipi.dsmt.quizarena.web.TokenRevocations;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletContextEvent;
 import jakarta.servlet.ServletContextListener;
@@ -44,11 +45,26 @@ public final class ErlangContextListener implements ServletContextListener {
                     nodeName, cookie, backendNodes, gatewayName);
             context.setAttribute(CLIENT_ATTRIBUTE, client);
 
+            client.startRevocationFeed(new ErlangClient.RevocationListener() {
+                @Override
+                public void onSnapshot(List<String> jtis) {
+                    TokenRevocations.replaceAll(jtis);
+                }
+
+                @Override
+                public void onRevoked(String jti) {
+                    TokenRevocations.revoke(jti);
+                }
+            });
+            // Prima di accettare richieste serve l'elenco dei login revocati.
+            boolean revocationsLoaded = client.awaitRevocations(5000);
+
             boolean gatewayReachable = client.isGatewayReachable(2000);
             context.log(
                     "Erlang node " + client.getNodeName()
                     + ", backends " + client.getBackends()
                     + ", gateway reachable: " + gatewayReachable
+                    + ", revocations loaded: " + revocationsLoaded
             );
 
             registerGameWebSocket(context);

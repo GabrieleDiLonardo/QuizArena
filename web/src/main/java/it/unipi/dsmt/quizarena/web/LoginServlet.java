@@ -65,13 +65,10 @@ public final class LoginServlet extends HttpServlet {
 
             HttpSession session = request.getSession(true);
             request.changeSessionId();
-            session.setAttribute(
-                    AuthenticationSession.USERNAME_ATTRIBUTE,
-                    authenticatedUsername
-            );
+            AuthToken.Issued token = AuthToken.issue(authenticatedUsername);
+            AuthenticationSession.bind(session, token.claims());
             response.addCookie(AuthToken.cookie(
-                    AuthToken.issue(authenticatedUsername),
-                    request.getContextPath()));
+                    token.value(), request.getContextPath()));
             response.sendRedirect(response.encodeRedirectURL(
                     request.getContextPath() + "/"));
         } catch (ErlangServiceException exception) {

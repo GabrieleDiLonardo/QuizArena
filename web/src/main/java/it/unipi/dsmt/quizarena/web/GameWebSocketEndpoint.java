@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -44,6 +45,13 @@ public final class GameWebSocketEndpoint extends Endpoint {
             GameWebSocketEndpoint.class.getName() + ".authenticatedUsername";
     private static final String HTTP_SESSION_PROPERTY =
             GameWebSocketEndpoint.class.getName() + ".httpSession";
+    private static final String TOKEN_ID_PROPERTY =
+            GameWebSocketEndpoint.class.getName() + ".tokenId";
+    // Connessioni aperte su questo Tomcat per token di login: alla revoca
+    // del token (logout, anche da un altro Tomcat) vengono chiuse.
+    private static final java.util.concurrent.ConcurrentHashMap<
+            String, java.util.Set<Session>> CONNECTIONS_BY_TOKEN =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private static final ObjectMapper JSON = new ObjectMapper();
     // Tempo concesso al cluster per ripristinare una stanza il cui nodo e'
     // caduto: elezione del leader (alcuni secondi) piu' riavvio della room.
@@ -76,6 +84,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private volatile String roomPin;
     private volatile String role;
     private String authenticatedUsername;
+    private volatile String tokenId;
     private HttpSession httpSession;
     private boolean stateReplayInProgress;
     private final Map<String, Long> pendingTimeProbes =
@@ -103,11 +112,18 @@ public final class GameWebSocketEndpoint extends Endpoint {
                 HTTP_SESSION_PROPERTY);
         Object username = config.getUserProperties().get(
                 AUTHENTICATED_USERNAME_PROPERTY);
-        if (!(username instanceof String value) || value.isBlank()) {
+        if (!(username instanceof String value) || value.isBlank()
+                || !(config.getUserProperties().get(TOKEN_ID_PROPERTY)
+                        instanceof String jti)
+                || TokenRevocations.isRevoked(jti)) {
             closeUnauthenticated(session);
             return;
         }
         authenticatedUsername = value;
+        tokenId = jti;
+        CONNECTIONS_BY_TOKEN
+                .computeIfAbsent(jti, key -> ConcurrentHashMap.newKeySet())
+                .add(session);
 
         // La sessione HTTP locale esiste solo se l'utente e' passato da
         // questo Tomcat: serve a chiudere le WebSocket al logout.
@@ -158,6 +174,26 @@ public final class GameWebSocketEndpoint extends Endpoint {
         issueTimeProbes();
     }
 
+    // Logout: chiude le connessioni aperte con il token revocato. Il client
+    // riceve il codice VIOLATED_POLICY e torna alla pagina di login.
+    public static void closeConnections(String jti) {
+        java.util.Set<Session> sessions = CONNECTIONS_BY_TOKEN.remove(jti);
+        if (sessions == null) {
+            return;
+        }
+        CloseReason reason = new CloseReason(
+                CloseReason.CloseCodes.VIOLATED_POLICY, "Logged out");
+        for (Session session : sessions) {
+            try {
+                if (session.isOpen()) {
+                    session.close(reason);
+                }
+            } catch (IOException exception) {
+                // La connessione e' gia' in chiusura.
+            }
+        }
+    }
+
     private void closeUnauthenticated(Session session) {
         closing.set(true);
         try {
@@ -205,6 +241,12 @@ public final class GameWebSocketEndpoint extends Endpoint {
                     serviceErrorMessage(exception));
         } catch (IOException exception) {
             sendError("backend_unavailable", "Backend unavailable");
+        } catch (RuntimeException exception) {
+            // Un errore imprevisto nella gestione di un messaggio non deve
+            // chiudere la connessione del giocatore.
+            LOGGER.log(Level.SEVERE, "Unexpected error handling " + text,
+                    exception);
+            sendError("internal_error", "Errore interno del server");
         }
     }
 
@@ -268,11 +310,12 @@ public final class GameWebSocketEndpoint extends Endpoint {
                     "Solo l'host puo' annullare la stanza");
             return;
         }
-        currentErlangSession().cancelRoom(
-                roomPin, ERLANG_TIMEOUT_MILLIS);
+        // Il PIN va letto prima della chiamata: la room invia game_cancelled
+        // prima della risposta, e quell'evento azzera l'associazione.
         String cancelledPin = roomPin;
-        roomPin = null;
-        role = null;
+        currentErlangSession().cancelRoom(
+                cancelledPin, ERLANG_TIMEOUT_MILLIS);
+        clearRoomAssociation();
         sendJson(Map.of("type", "cancelled", "pin", cancelledPin));
     }
 
@@ -623,6 +666,12 @@ public final class GameWebSocketEndpoint extends Endpoint {
     public void onClose(Session session, CloseReason closeReason) {
         closing.set(true);
         cancelRecoveryWatchdog();
+        if (tokenId != null) {
+            CONNECTIONS_BY_TOKEN.computeIfPresent(tokenId, (key, sessions) -> {
+                sessions.remove(session);
+                return sessions.isEmpty() ? null : sessions;
+            });
+        }
         AuthenticationSession.unregisterWebSocket(httpSession, session);
         releaseRoomAssociation();
         closeErlangSession();
@@ -772,9 +821,19 @@ public final class GameWebSocketEndpoint extends Endpoint {
             String username = session instanceof HttpSession httpSession
                     ? AuthenticationSession.username(httpSession)
                     : null;
-            if (username == null) {
-                username = AuthToken.usernameFromCookieHeaders(
+            String jti = session instanceof HttpSession httpSession
+                    ? AuthenticationSession.jti(httpSession)
+                    : null;
+            if (username == null || jti == null) {
+                AuthToken.Verified token = AuthToken.fromCookieHeaders(
                         request.getHeaders().get("cookie"));
+                username = token == null ? null : token.username();
+                jti = token == null ? null : token.jti();
+            }
+            if (jti == null) {
+                endpointConfig.getUserProperties().remove(TOKEN_ID_PROPERTY);
+            } else {
+                endpointConfig.getUserProperties().put(TOKEN_ID_PROPERTY, jti);
             }
 
             if (username == null) {

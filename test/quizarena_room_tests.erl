@@ -27,7 +27,8 @@ room_test_() ->
              {timeout, 30, fun() -> answer_after_deadline_scores_zero(QuizIds) end},
              {timeout, 30, fun() -> suspicious_time_is_flagged(QuizIds) end},
              {timeout, 30, fun() -> missed_events_are_replayed(QuizIds) end},
-             {timeout, 30, fun() -> lobby_is_pushed(QuizIds) end}
+             {timeout, 30, fun() -> lobby_is_pushed(QuizIds) end},
+             {timeout, 30, fun() -> revoked_tokens_are_pushed(QuizIds) end}
          ]}
      end}.
 
@@ -307,6 +308,23 @@ lobby_is_pushed(#{two := QuizId}) ->
         not lists:any(fun(#{pin := P}) -> P =:= Pin end, Rooms)
     end),
     stop_all([H, Viewer]).
+
+%% Un Tomcat iscritto riceve l'elenco dei token revocati e poi ogni nuova
+%% revoca; le revoche di token gia' scaduti non vengono restituite.
+revoked_tokens_are_pushed(_QuizIds) ->
+    Now = erlang:system_time(millisecond),
+    ok = quizarena_db:revoke_token("old-token", Now - 1000),
+    ok = quizarena_db:revoke_token("token-a", Now + 60000),
+    Tomcat = client(),
+    {ok, Revoked} = req(Tomcat, subscribe_revocations),
+    ?assertEqual(["token-a"], Revoked),
+    {ok, ok} = req(client(), {revoke_token, "token-b", Now + 60000}),
+    #{jti := "token-b"} = expect_event(Tomcat, token_revoked),
+    ?assertEqual({ok, ["token-a", "token-b"]},
+                 setelement(2, quizarena_db:list_revoked_tokens(),
+                            lists:sort(element(2,
+                                quizarena_db:list_revoked_tokens())))),
+    stop_all([Tomcat]).
 
 expect_lobby(Client, Accept) ->
     receive

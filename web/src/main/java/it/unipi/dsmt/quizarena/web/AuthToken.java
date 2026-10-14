@@ -19,8 +19,10 @@ import jakarta.servlet.http.HttpServletRequest;
 // Credenziale di login verificabile da qualunque Tomcat del cluster.
 // La HttpSession vive in un solo Tomcat: se l'utente viene servito da un
 // altro (bilanciamento o caduta del primo), il cookie firmato permette di
-// riconoscerlo senza un nuovo login. Il token contiene username e scadenza,
-// firmati con HMAC-SHA256 tramite un segreto condiviso fra tutti i Tomcat.
+// riconoscerlo senza un nuovo login. Il token contiene username, scadenza e
+// un identificativo casuale (jti), firmati con HMAC-SHA256 tramite un
+// segreto condiviso fra tutti i Tomcat. Il jti permette di revocare il
+// singolo login al logout (vedi TokenRevocations).
 public final class AuthToken {
 
     public static final String COOKIE_NAME = "QA_AUTH";
@@ -31,8 +33,17 @@ public final class AuthToken {
     private static final Base64.Encoder ENCODER =
             Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private static volatile byte[] secret;
+
+    // Contenuto di un token valido.
+    public record Verified(String username, String jti, long expiresAtMillis) {
+    }
+
+    // Token appena emesso, da inviare come cookie.
+    public record Issued(String value, Verified claims) {
+    }
 
     private AuthToken() {
     }
@@ -43,7 +54,7 @@ public final class AuthToken {
     public static void configure(String configuredSecret) {
         if (configuredSecret == null || configuredSecret.isBlank()) {
             byte[] random = new byte[32];
-            new SecureRandom().nextBytes(random);
+            RANDOM.nextBytes(random);
             secret = random;
             LOGGER.warning("QUIZARENA_AUTH_SECRET not set: login cookies "
                     + "are valid only on this Tomcat");
@@ -52,41 +63,51 @@ public final class AuthToken {
         }
     }
 
-    public static String issue(String username) {
+    public static Issued issue(String username) {
         long expiresAt = Instant.now().plus(VALIDITY).getEpochSecond();
+        byte[] id = new byte[16];
+        RANDOM.nextBytes(id);
+        String jti = ENCODER.encodeToString(id);
         String payload = ENCODER.encodeToString(
-                username.getBytes(StandardCharsets.UTF_8)) + "." + expiresAt;
-        return payload + "." + sign(payload);
+                username.getBytes(StandardCharsets.UTF_8))
+                + "." + expiresAt + "." + jti;
+        return new Issued(payload + "." + sign(payload),
+                new Verified(username, jti, expiresAt * 1000));
     }
 
-    // Restituisce lo username se il token e' integro e non scaduto.
-    public static String verify(String token) {
+    // Restituisce il contenuto del token se e' integro, non scaduto e non
+    // revocato da un logout.
+    public static Verified verify(String token) {
         if (token == null) {
             return null;
         }
         String[] parts = token.split("\\.");
-        if (parts.length != 3) {
+        if (parts.length != 4) {
             return null;
         }
-        String payload = parts[0] + "." + parts[1];
+        String payload = parts[0] + "." + parts[1] + "." + parts[2];
         byte[] expected = sign(payload).getBytes(StandardCharsets.US_ASCII);
-        byte[] actual = parts[2].getBytes(StandardCharsets.US_ASCII);
+        byte[] actual = parts[3].getBytes(StandardCharsets.US_ASCII);
         if (!MessageDigest.isEqual(expected, actual)) {
             return null;
         }
         try {
-            if (Long.parseLong(parts[1]) < Instant.now().getEpochSecond()) {
+            long expiresAt = Long.parseLong(parts[1]);
+            if (expiresAt < Instant.now().getEpochSecond()
+                    || TokenRevocations.isRevoked(parts[2])) {
                 return null;
             }
             String username = new String(
                     DECODER.decode(parts[0]), StandardCharsets.UTF_8);
-            return username.isBlank() ? null : username;
+            return username.isBlank()
+                    ? null
+                    : new Verified(username, parts[2], expiresAt * 1000);
         } catch (IllegalArgumentException exception) {
             return null;
         }
     }
 
-    public static String usernameFrom(HttpServletRequest request) {
+    public static Verified from(HttpServletRequest request) {
         Cookie[] cookies = request.getCookies();
         if (cookies == null) {
             return null;
@@ -100,7 +121,7 @@ public final class AuthToken {
     }
 
     // Variante per l'handshake WebSocket, che espone solo gli header grezzi.
-    public static String usernameFromCookieHeaders(List<String> headers) {
+    public static Verified fromCookieHeaders(List<String> headers) {
         if (headers == null) {
             return null;
         }

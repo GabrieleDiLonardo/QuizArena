@@ -44,6 +44,9 @@ public final class ErlangClient implements AutoCloseable {
     private final String gatewayName;
     private final ScheduledExecutorService healthCheck;
     private volatile String currentBackend;
+    private volatile boolean closed;
+    private final java.util.concurrent.CountDownLatch revocationsLoaded =
+            new java.util.concurrent.CountDownLatch(1);
 
     // I nodi Erlang sono elencati in ordine di preferenza: il primo e' quello
     // sulla stessa macchina, gli altri sono usati solo se non e' raggiungibile.
@@ -277,6 +280,112 @@ public final class ErlangClient implements AutoCloseable {
                 encodeQuizId(quizId)
         });
         requireOkAtom(sendRequest(request, timeoutMillis));
+    }
+
+    // ---------- Logout ----------
+
+    public void revokeToken(String jti, long expiresAtMillis, long timeoutMillis)
+            throws IOException, ErlangServiceException {
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[]{
+                new OtpErlangAtom("revoke_token"),
+                new OtpErlangString(jti),
+                new OtpErlangLong(expiresAtMillis)
+        });
+        requireOkAtom(sendRequest(request, timeoutMillis));
+    }
+
+    public interface RevocationListener {
+
+        // Elenco completo dei token revocati, a ogni (re)iscrizione.
+        void onSnapshot(List<String> jtis);
+
+        // Nuova revoca, ricevuta da qualunque Tomcat del cluster.
+        void onRevoked(String jti);
+    }
+
+    // Iscrizione permanente alle revoche dei token di login: una mailbox
+    // dedicata si iscrive al processo quizarena_revocations di un nodo
+    // Erlang. Se quel nodo cade (uscita del link) l'iscrizione viene rifatta
+    // su un altro nodo, ricevendo di nuovo l'elenco completo.
+    public void startRevocationFeed(RevocationListener listener) {
+        Thread thread = new Thread(() -> revocationLoop(listener),
+                "quizarena-revocations");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    // Attende il primo elenco delle revoche (all'avvio di Tomcat).
+    public boolean awaitRevocations(long timeoutMillis) {
+        try {
+            return revocationsLoaded.await(timeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private void revocationLoop(RevocationListener listener) {
+        while (!closed) {
+            OtpMbox mailbox = node.createMbox();
+            try {
+                String backend = currentBackend();
+                OtpErlangRef reference = node.createRef();
+                mailbox.send(gatewayName, backend, new OtpErlangTuple(
+                        new OtpErlangObject[]{mailbox.self(), reference,
+                                new OtpErlangAtom("subscribe_revocations")}));
+                OtpErlangObject reply = mailbox.receive(5000);
+                if (!(reply instanceof OtpErlangTuple tuple)
+                        || tuple.arity() != 2
+                        || !reference.equals(tuple.elementAt(0))) {
+                    throw new IOException("No reply to subscribe_revocations");
+                }
+                listener.onSnapshot(stringList(requireOk(tuple.elementAt(1))));
+                revocationsLoaded.countDown();
+                while (!closed) {
+                    OtpErlangObject message = mailbox.receive(1000);
+                    if (message instanceof OtpErlangTuple event
+                            && event.arity() == 2
+                            && new OtpErlangAtom("event").equals(event.elementAt(0))
+                            && event.elementAt(1) instanceof OtpErlangMap map
+                            && new OtpErlangAtom("token_revoked").equals(
+                                    map.get(new OtpErlangAtom("type")))) {
+                        listener.onRevoked(decodeString(
+                                map.get(new OtpErlangAtom("jti")), "jti"));
+                    }
+                }
+            } catch (OtpErlangExit exit) {
+                LOGGER.warning("Revocation feed lost: " + exit.reason());
+            } catch (IOException | ErlangServiceException
+                     | OtpErlangDecodeException exception) {
+                LOGGER.warning("Revocation feed unavailable: "
+                        + exception.getMessage());
+            } catch (RuntimeException exception) {
+                LOGGER.log(Level.WARNING, "Revocation feed failure", exception);
+            } finally {
+                mailbox.close();
+            }
+            sleepQuietly(1000);
+        }
+    }
+
+    private static List<String> stringList(OtpErlangObject term)
+            throws IOException {
+        if (!(term instanceof OtpErlangList list)) {
+            throw new IOException("Expected a list of strings");
+        }
+        List<String> values = new ArrayList<>(list.arity());
+        for (OtpErlangObject item : list) {
+            values.add(decodeString(item, "jti"));
+        }
+        return values;
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     // ---------- Storico ----------
@@ -580,6 +689,7 @@ public final class ErlangClient implements AutoCloseable {
 
     @Override
     public void close() {
+        closed = true;
         healthCheck.shutdownNow();
         node.close();
     }
