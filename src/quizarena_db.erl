@@ -9,6 +9,8 @@
          get_session/1, get_session_questions/1, sweep_orphan_sessions/0,
          %% Registro stanze attive
          publish_room/1, unpublish_room/1, list_public_rooms/0,
+         %% Snapshot delle partite in corso
+         save_snapshot/2, delete_snapshot/1, list_snapshots/0,
          %% Storico
          get_history/1,
          %% Quiz CRUD
@@ -37,7 +39,7 @@ init() ->
     ok = ensure_tables(),
     ok = wait_for_tables(),
     RunningNodes = mnesia:system_info(running_db_nodes),
-    io:format("Mnesia schema ready on ~p~n", [RunningNodes]),
+    logger:notice("Mnesia schema ready on ~p", [RunningNodes]),
     %% Con altri nodi attivi le stanze orfane sono compito del leader.
     case RunningNodes of
         [_OnlyThisNode] -> sweep_orphan_sessions();
@@ -59,7 +61,7 @@ join_cluster(AttemptsLeft) ->
                         true ->
                             ok;
                         false when AttemptsLeft > 0 ->
-                            io:format("Waiting for the Mnesia seed ~p~n",
+                            logger:notice("Waiting for the Mnesia seed ~p",
                                       [quizarena_cluster:seed()]),
                             timer:sleep(?JOIN_RETRY_MS),
                             quizarena_cluster:connect(),
@@ -178,7 +180,7 @@ wait_for_tables() ->
         ok ->
             ok;
         {timeout, Missing} ->
-            io:format("Forcing load of tables ~p~n", [Missing]),
+            logger:notice("Forcing load of tables ~p", [Missing]),
             [yes = mnesia:force_load_table(T) || T <- Missing],
             ok
     end.
@@ -407,7 +409,7 @@ sweep_orphan_sessions() ->
     lists:foreach(fun unpublish_room/1, StaleRooms),
     case Orphans of
         [] -> ok;
-        _ -> io:format("Cancelled ~p orphan sessions~n", [length(Orphans)])
+        _ -> logger:notice("Cancelled ~p orphan sessions", [length(Orphans)])
     end.
 
 %% ---------- Registro stanze attive ----------
@@ -432,6 +434,26 @@ list_public_rooms() ->
             num_questions => NumQuestions, current_round => Round}
           || {open_rooms, Pin, _SessionId, Title, Host, _Visibility, Status,
               NumPlayers, NumQuestions, Round, _Node} <- Rows]}.
+
+%% ---------- Snapshot delle partite in corso ----------
+
+%% sync_dirty attende che la scrittura sia applicata su tutte le repliche
+%% attive: quando la room conferma un'operazione, lo stato e' gia' al sicuro
+%% sugli altri nodi. Ogni riga ha un unico scrittore (la room del PIN).
+save_snapshot(Pin, Snapshot) ->
+    mnesia:sync_dirty(fun() ->
+        mnesia:write({room_snapshots, Pin, node(), Snapshot})
+    end).
+
+delete_snapshot(Pin) ->
+    mnesia:sync_dirty(fun() ->
+        mnesia:delete({room_snapshots, Pin})
+    end).
+
+list_snapshots() ->
+    [{Pin, OwnerNode, Snapshot}
+     || {room_snapshots, Pin, OwnerNode, Snapshot}
+            <- mnesia:dirty_match_object({room_snapshots, '_', '_', '_'})].
 
 delete_session_questions(SessionId) ->
     SessionQuestions = mnesia:match_object(

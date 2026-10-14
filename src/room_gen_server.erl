@@ -14,6 +14,8 @@
 %% Tempo concesso all'host per riconnettersi prima di chiudere la stanza
 %% (sovrascrivibile con la variabile d'ambiente host_grace_ms).
 -define(DEFAULT_HOST_GRACE_MS, 30000).
+%% Eventi conservati nello snapshot per il recupero dei client.
+-define(SNAPSHOT_EVENT_LOG, 50).
 
 %% I client sono mailbox Jinterface: Jinterface non supporta i monitor
 %% (la chiusura di una singola mailbox non genera DOWN), mentre propaga
@@ -77,6 +79,15 @@ via(Pin) ->
 
 %% ---------- Callback gen_server ----------
 
+%% Avvio normale (#{pin, session_id, host_username, host_pid, visibility})
+%% oppure ripristino da snapshot dopo la caduta del nodo che ospitava la
+%% stanza (#{recover => Snapshot}).
+init(#{recover := #{pin := Pin} = Snapshot}) ->
+    process_flag(trap_exit, true),
+    case global:register_name({room, Pin}, self()) of
+        yes -> {ok, recover_state(Snapshot)};
+        no  -> {stop, {room_already_registered, Pin}}
+    end;
 init(#{pin := Pin} = Args) ->
     process_flag(trap_exit, true),
     case global:register_name({room, Pin}, self()) of
@@ -91,8 +102,8 @@ init_registered_room(#{pin := Pin, session_id := SessionId,
           quizarena_db:get_session_questions(SessionId)} of
         {{ok, #{quiz_title := Title}}, {ok, [_ | _] = Questions}} ->
             link(HostPid),
-            io:format("[room ~s] avviato (host=~s, visibility=~p, "
-                      "~p domande)~n",
+            logger:notice("[room ~s] avviato (host=~s, visibility=~p, "
+                      "~p domande)",
                       [Pin, HostUsername, Visibility, length(Questions)]),
             State = #{
                 pin => Pin,
@@ -112,9 +123,11 @@ init_registered_room(#{pin := Pin, session_id := SessionId,
                 round_deadline => undefined,
                 timer_ref => undefined,
                 seq => 0,
-                event_log => []
+                event_log => [],
+                recover_count => 0
             },
             publish(State),
+            persist(State),
             {ok, State};
         {{ok, _Session}, {ok, []}} ->
             {stop, no_questions};
@@ -213,7 +226,7 @@ handle_call({start_game, From}, _From, State) ->
         ok ->
             start_game_if_allowed(State);
         {error, Reason} ->
-            io:format("[room ~s] start_game denied: ~p~n",
+            logger:notice("[room ~s] start_game denied: ~p",
                       [maps:get(pin, State), Reason]),
             {reply, {error, Reason}, State}
     end;
@@ -228,7 +241,7 @@ handle_call({next_round, From}, _From, State) ->
                     {reply, {error, {invalid_state, Status}}, State}
             end;
         {error, Reason} ->
-            io:format("[room ~s] next_round denied: ~p~n",
+            logger:notice("[room ~s] next_round denied: ~p",
                       [maps:get(pin, State), Reason]),
             {reply, {error, Reason}, State}
     end;
@@ -265,9 +278,11 @@ handle_call({answer, PlayerPid, Round, Answer, ClientElapsedMs, RttMs},
                             },
                             NewPlayers = maps:put(Username, UpdatedPlayer, Players),
                             State1 = State#{players => NewPlayers},
-                            io:format("[room ~s] player ~s answered round ~p: ~p~n",
+                            logger:notice("[room ~s] player ~s answered round ~p: ~p",
                                       [maps:get(pin, State), Username, Round, Answer]),
                             State2 = maybe_close_round(State1),
+                            %% Risposta confermata solo dopo la replica.
+                            persist(State2),
                             {reply, ok, State2}
                     end
             end;
@@ -320,7 +335,7 @@ handle_info({round_timeout, Round}, State) ->
         Round ->
             case maps:get(status, State) of
                 round_open ->
-                    io:format("[room ~s] round ~p timeout~n",
+                    logger:notice("[room ~s] round ~p timeout",
                               [maps:get(pin, State), Round]),
                     NewState = close_round(State),
                     {noreply, NewState};
@@ -339,8 +354,15 @@ handle_info({host_grace_expired, Ref}, State) ->
 
 handle_info(_Info, State) -> {noreply, State}.
 
-terminate(_Reason, State) ->
-    quizarena_db:unpublish_room(maps:get(pin, State)),
+%% Fine regolare della partita: la stanza sparisce. Se invece il nodo si
+%% sta spegnendo (shutdown) lo snapshot resta, e il leader del cluster
+%% ripristinera' la stanza su un altro nodo.
+terminate(normal, State) ->
+    Pin = maps:get(pin, State),
+    quizarena_db:unpublish_room(Pin),
+    quizarena_db:delete_snapshot(Pin),
+    ok;
+terminate(_Reason, _State) ->
     ok.
 
 %% ---------- Disconnessioni ----------
@@ -365,16 +387,20 @@ client_down(Pid, State) ->
 %% Intanto il round in corso prosegue e si chiude normalmente.
 host_disconnected(State) ->
     safe_unlink(maps:get(host_pid, State)),
+    {GraceMs, State1} = start_host_grace(State),
+    logger:notice("[room ~s] host disconnected, grace ~p ms",
+              [maps:get(pin, State), GraceMs]),
+    emit_event(State1, #{
+        type => host_disconnected,
+        grace_ms => GraceMs
+    }).
+
+start_host_grace(State) ->
     GraceMs = application:get_env(quizarena, host_grace_ms,
                                   ?DEFAULT_HOST_GRACE_MS),
     Ref = make_ref(),
     erlang:send_after(GraceMs, self(), {host_grace_expired, Ref}),
-    io:format("[room ~s] host disconnected, grace ~p ms~n",
-              [maps:get(pin, State), GraceMs]),
-    emit_event(State#{host_connected => false, host_grace_ref => Ref}, #{
-        type => host_disconnected,
-        grace_ms => GraceMs
-    }).
+    {GraceMs, State#{host_connected => false, host_grace_ref => Ref}}.
 
 %% Scaduto il periodo di grazia: se tutte le domande sono state giocate i
 %% risultati vengono salvati, altrimenti la partita e' annullata.
@@ -392,7 +418,7 @@ reattach_host(NewPid, State) ->
         false -> ok
     end,
     link(NewPid),
-    io:format("[room ~s] host rejoined with pid ~p~n",
+    logger:notice("[room ~s] host rejoined with pid ~p",
               [maps:get(pin, State), NewPid]),
     emit_event(State#{host_pid => NewPid, host_connected => true,
                       host_grace_ref => undefined},
@@ -409,7 +435,7 @@ mark_player_disconnected(Username, Player, State) ->
                      Player#player{pid = undefined, connected = false},
                      Players)
     end,
-    io:format("[room ~s] player ~s disconnected~n",
+    logger:notice("[room ~s] player ~s disconnected",
               [maps:get(pin, State), Username]),
     State1 = emit_event(State#{players => NewPlayers}, #{
         type => player_disconnected,
@@ -492,7 +518,7 @@ cancel_game_state(State, Reason) ->
     case quizarena_db:cancel_session(SessionId) of
         ok -> ok;
         {error, DbReason} ->
-            io:format("[room ~s] cancel_session failed: ~p~n",
+            logger:notice("[room ~s] cancel_session failed: ~p",
                       [Pin, DbReason])
     end,
     CancelledState = State1#{status => cancelled},
@@ -500,7 +526,7 @@ cancel_game_state(State, Reason) ->
         type => game_cancelled,
         reason => Reason
     }),
-    io:format("[room ~s] cancelled: ~p~n", [Pin, Reason]),
+    logger:notice("[room ~s] cancelled: ~p", [Pin, Reason]),
     NewState.
 
 start_game_if_allowed(State) ->
@@ -522,7 +548,7 @@ start_game_if_allowed(State) ->
                                 State1,
                                 #{type => game_started}
                             ),
-                            io:format("[room ~s] game started~n", [Pin]),
+                            logger:notice("[room ~s] game started", [Pin]),
                             {reply, ok, NewState};
                         {error, Reason} ->
                             {reply, {
@@ -579,11 +605,11 @@ open_next_round(State) ->
                 round => Round,
                 question => PublicQuestion
             }),
-            io:format("[room ~s] round ~p started (~p ms)~n",
+            logger:notice("[room ~s] round ~p started (~p ms)",
                       [maps:get(pin, State), Round, TimeLimit]),
             {reply, ok, NewState};
         false ->
-            io:format("[room ~s] no more questions (round ~p)~n",
+            logger:notice("[room ~s] no more questions (round ~p)",
                       [maps:get(pin, State), Round]),
             {reply, {error, no_more_questions}, State1}
     end.
@@ -607,7 +633,7 @@ finish_game(State) ->
                 type => game_finished,
                 final_leaderboard => Leaderboard
             }),
-            io:format("[room ~s] game finished~n", [Pin]),
+            logger:notice("[room ~s] game finished", [Pin]),
             {ok, NewState};
         {error, Reason} ->
             {error, {session_finish_failed, Reason}}
@@ -647,7 +673,7 @@ join_new_player(Username, PlayerPid, State) ->
                 type => player_joined,
                 username => Username
             }),
-            io:format("[room ~s] ~s joined (pid=~p)~n",
+            logger:notice("[room ~s] ~s joined (pid=~p)",
                       [maps:get(pin, State), Username, PlayerPid]),
             {reply, ok, NewState};
         Status ->
@@ -665,7 +691,7 @@ reattach_player(Username, Player, NewPid, State) ->
         type => player_rejoined,
         username => Player#player.username
     }),
-    io:format("[room ~s] player ~s rejoined with pid ~p~n",
+    logger:notice("[room ~s] player ~s rejoined with pid ~p",
               [maps:get(pin, State), Username, NewPid]),
     {reply, ok, NewState}.
 
@@ -691,6 +717,7 @@ emit_event(State, Event) ->
     %% Prima il registro, poi i client: chi reagisce all'evento leggendo
     %% la lobby trova gia' lo stato aggiornato.
     publish(NewState),
+    persist(NewState),
     broadcast(NewState, Event1),
     NewState.
 
@@ -718,6 +745,78 @@ publish(State) ->
         num_questions => length(maps:get(quiz_questions, State)),
         current_round => maps:get(current_round, State)
     }).
+
+%% ---------- Snapshot e ripristino ----------
+
+%% Lo stato della partita viene replicato a ogni cambiamento. I tempi del
+%% round sono salvati come tempo di sistema: il tempo monotono non e'
+%% confrontabile fra nodi diversi, mentre gli orologi delle macchine sono
+%% sincronizzati (NTP) con uno scarto trascurabile rispetto alla durata
+%% di un round.
+persist(State) ->
+    Now = erlang:monotonic_time(millisecond),
+    WallNow = erlang:system_time(millisecond),
+    ToWall = fun(undefined) -> undefined;
+                (Monotonic) -> WallNow + (Monotonic - Now)
+             end,
+    Snapshot = maps:without(
+        [timer_ref, host_grace_ref, round_start_time, round_deadline],
+        State#{event_log => lists:sublist(maps:get(event_log, State),
+                                          ?SNAPSHOT_EVENT_LOG)}),
+    quizarena_db:save_snapshot(maps:get(pin, State), Snapshot#{
+        round_start_wall => ToWall(maps:get(round_start_time, State)),
+        round_deadline_wall => ToWall(maps:get(round_deadline, State))
+    }).
+
+%% Ricostruisce la stanza da uno snapshot. I client vengono ri-linkati:
+%% quelli che erano sul nodo caduto risultano subito disconnessi ('EXIT'
+%% noconnection) e potranno rientrare; gli altri continuano a ricevere gli
+%% eventi senza accorgersi del cambio di nodo.
+recover_state(Snapshot) ->
+    Now = erlang:monotonic_time(millisecond),
+    WallNow = erlang:system_time(millisecond),
+    ToMonotonic = fun(undefined) -> undefined;
+                     (Wall) -> Now + (Wall - WallNow)
+                  end,
+    State0 = maps:without([round_start_wall, round_deadline_wall], Snapshot),
+    State1 = State0#{
+        timer_ref => undefined,
+        host_grace_ref => undefined,
+        round_start_time => ToMonotonic(maps:get(round_start_wall, Snapshot)),
+        round_deadline => ToMonotonic(maps:get(round_deadline_wall, Snapshot)),
+        recover_count => maps:get(recover_count, Snapshot, 0) + 1
+    },
+    State2 = relink_clients(State1),
+    State3 = restart_round_timer(State2),
+    logger:notice("[room ~s] ripristinata su ~p (seq ~p, stato ~p)",
+              [maps:get(pin, State3), node(), maps:get(seq, State3),
+               maps:get(status, State3)]),
+    emit_event(State3, #{type => room_recovered, node => node()}).
+
+relink_clients(State) ->
+    State1 = case maps:get(host_connected, State) of
+        true ->
+            link(maps:get(host_pid, State)),
+            State;
+        false ->
+            {_GraceMs, WithGrace} = start_host_grace(State),
+            WithGrace
+    end,
+    maps:foreach(fun(_Username, #player{pid = Pid, connected = Connected}) ->
+        case Connected of
+            true -> link(Pid);
+            false -> ok
+        end
+    end, maps:get(players, State1)),
+    State1.
+
+restart_round_timer(#{status := round_open, current_round := Round,
+                      round_deadline := Deadline} = State) ->
+    Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    TimerRef = erlang:send_after(Remaining, self(), {round_timeout, Round}),
+    State#{timer_ref => TimerRef};
+restart_round_timer(State) ->
+    State.
 
 %% ---------- Round ----------
 
@@ -774,9 +873,9 @@ validated_answer_time(ClientElapsedMs, ServerElapsedMs, RttMs,
         true ->
             ClientElapsedMs;
         false ->
-            io:format(
+            logger:notice(
                 "[room ~s] suspicious answer time from ~s: "
-                "client=~p ms server=~p ms rtt=~p ms~n",
+                "client=~p ms server=~p ms rtt=~p ms",
                 [Pin, Username, ClientElapsedMs, ServerElapsedMs, RttMs]),
             max(0, ServerElapsedMs)
     end.
