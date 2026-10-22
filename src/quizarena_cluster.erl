@@ -5,11 +5,8 @@
 %% Composizione del cluster. L'ordine della lista e' significativo:
 %% il primo nodo e' il seed che crea lo schema Mnesia al primo avvio, e la
 %% posizione di un nodo e' il suo identificatore nell'elezione Bully.
-%%
-%% Fonte, in ordine di priorita':
-%%   1. variabile d'ambiente QUIZARENA_CLUSTER_NODES (nodi separati da virgola)
-%%   2. parametro cluster_nodes dell'applicazione (sys.config)
-%% Il nodo locale viene aggiunto in coda se non compare nella lista.
+
+%% restituisce la lista ordinata dei nodi del cluster
 members() ->
     Configured = case os:getenv("QUIZARENA_CLUSTER_NODES") of
         false -> application:get_env(quizarena, cluster_nodes, []);

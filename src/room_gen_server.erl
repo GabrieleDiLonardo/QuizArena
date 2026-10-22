@@ -6,17 +6,8 @@
          get_state/1, get_player_state/2, get_events_since/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--define(POINTS_BASE, 1000).
 -define(ROUND_TIME_LIMIT, 60000).
 -define(MAX_EVENT_LOG, 200).
-%% Controllo dei tempi di risposta (approccio simile a Cristian): il tempo
-%% misurato dal client sul proprio orologio monotono e' accettato se si
-%% discosta dal tempo misurato dal server di al piu' questa tolleranza piu'
-%% l'RTT del client, stimato dal web tier con piu' sonde (il minimo).
--define(ANSWER_TIME_TOLERANCE_MS, 1000).
-%% Limite all'RTT dichiarato: un client che ritarda di proposito le sonde
-%% non puo' allargare la tolleranza oltre questo valore.
--define(MAX_ACCEPTED_RTT_MS, 1000).
 %% Margine dopo la scadenza del round: una risposta data in tempo dal
 %% client ma ancora in viaggio sulla rete non viene scartata.
 -define(ANSWER_GRACE_MS, 500).
@@ -279,10 +270,18 @@ handle_call({answer, PlayerPid, Round, Answer, ClientElapsedMs, RttMs},
                                 - maps:get(round_start_time, State),
                             TimeLimitMs = maps:get(
                                 time_limit, maps:get(question, State)),
-                            {ElapsedMs, Suspicious} = validated_answer_time(
-                                ClientElapsedMs, ServerElapsedMs,
-                                RttMs, TimeLimitMs,
-                                maps:get(pin, State), Username),
+                            {ElapsedMs, Suspicious} =
+                                quizarena_scoring:validated_answer_time(
+                                    ClientElapsedMs, ServerElapsedMs,
+                                    RttMs, TimeLimitMs),
+                            case Suspicious of
+                                true -> logger:notice(
+                                    "[room ~s] suspicious answer time from ~s: "
+                                    "client=~p ms server=~p ms rtt=~p ms",
+                                    [maps:get(pin, State), Username,
+                                     ClientElapsedMs, ServerElapsedMs, RttMs]);
+                                false -> ok
+                            end,
                             UpdatedPlayer = Player#player{
                                 answered = true,
                                 answer_time = ElapsedMs,
@@ -861,7 +860,8 @@ close_round(State) ->
     UpdatedPlayers = maps:map(fun(_Username, P) ->
         case P#player.answered andalso P#player.chosen_answer =:= Correct of
             true ->
-                Points = compute_score(P#player.answer_time, TimeLimit),
+                Points = quizarena_scoring:compute_score(
+                             P#player.answer_time, TimeLimit),
                 P#player{score = P#player.score + Points};
             false -> P
         end
@@ -881,38 +881,9 @@ close_round(State) ->
         suspicious => Suspicious
     }).
 
-%% Restituisce {TempoUsatoPerIlPunteggio, Sospetto}. Il tempo del client e'
-%% piu' preciso (non include la latenza di rete); se non e' credibile si usa
-%% quello del server, che penalizza il client della latenza.
-validated_answer_time(ClientElapsedMs, ServerElapsedMs, RttMs,
-                      TimeLimitMs, Pin, Username) ->
-    AcceptedRttMs = min(RttMs, ?MAX_ACCEPTED_RTT_MS),
-    AllowedDifferenceMs = ?ANSWER_TIME_TOLERANCE_MS + AcceptedRttMs,
-    DifferenceMs = abs(ServerElapsedMs - ClientElapsedMs),
-    case ClientElapsedMs =< TimeLimitMs
-         andalso DifferenceMs =< AllowedDifferenceMs of
-        true ->
-            {ClientElapsedMs, false};
-        false ->
-            logger:notice(
-                "[room ~s] suspicious answer time from ~s: "
-                "client=~p ms server=~p ms rtt=~p ms",
-                [Pin, Username, ClientElapsedMs, ServerElapsedMs, RttMs]),
-            {max(0, ServerElapsedMs), true}
-    end.
-
-%% Una risposta corretta vale da POINTS_BASE (istantanea) a POINTS_BASE/2
-%% (alla scadenza), decrescendo linearmente: la correttezza conta sempre
-%% piu' della velocita'. Oltre la scadenza (possibile solo nel margine,
-%% quando per il punteggio vale il tempo del server) non vale nulla.
-compute_score(ElapsedMs, TimeLimitMs) when ElapsedMs > TimeLimitMs ->
-    0;
-compute_score(ElapsedMs, TimeLimitMs) ->
-    round(?POINTS_BASE * (1 - max(0, ElapsedMs) / (2 * TimeLimitMs))).
-
 build_leaderboard(Players) ->
-    List = [{P#player.username, P#player.score} || P <- maps:values(Players)],
-    lists:reverse(lists:keysort(2, List)).
+    quizarena_scoring:leaderboard(
+        [{P#player.username, P#player.score} || P <- maps:values(Players)]).
 
 cancel_timer(State) ->
     case maps:get(timer_ref, State, undefined) of

@@ -15,7 +15,7 @@ init([]) ->
                  period => 10},
     ChildSpec = #{id => room_gen_server,
                   start => {room_gen_server, start_link, []},
-                  restart => temporary,
+                  restart => temporary,     %% se non ci fosse questo se una stanza crasha viene riavviata vuota e non in mezzo alla partita
                   shutdown => 5000,
                   type => worker,
                   modules => [room_gen_server]},

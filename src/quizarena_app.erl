@@ -4,12 +4,9 @@
 -export([start/2, stop/1]).
 
 start(_Type, _Args) ->
-    ok = quizarena_cluster:connect(),
-    ok = quizarena_db:init(),
-    quizarena_sup:start_link().
+    ok = quizarena_cluster:connect(),   %% collega gli altri nodi
+    ok = quizarena_db:init(),           %% prepara Mnesia
+    quizarena_sup:start_link().         %% avvia i processi 
 
-%% Mnesia e' una dipendenza dell'applicazione: viene fermata da chi ferma
-%% il sistema. Chiamare mnesia:stop() qui causerebbe un deadlock con
-%% l'application controller, impegnato a fermare quizarena.
 stop(_State) ->
     ok.

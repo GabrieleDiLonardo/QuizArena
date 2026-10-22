@@ -49,6 +49,7 @@ init() ->
     end,
     ok.
 
+%% Fa entrare il nodo nel database condiviso
 join_cluster(AttemptsLeft) ->
     case mnesia:system_info(use_dir) of
         true ->
@@ -74,11 +75,13 @@ join_cluster(AttemptsLeft) ->
             end
     end.
 
+%% Restituisce gli altri nodi del cluster che sono collegati e hanno Mnesia accesa
 running_peers() ->
     [Node || Node <- quizarena_cluster:others(),
              lists:member(Node, nodes()),
              rpc:call(Node, mnesia, system_info, [is_running]) =:= yes].
 
+%% Fa in modo che lo schema del database di questo nodo sia salvato su disco
 ensure_disc_schema() ->
     case mnesia:change_table_copy_type(schema, node(), disc_copies) of
         {atomic, ok} -> ok;
@@ -86,6 +89,7 @@ ensure_disc_schema() ->
         {aborted, Reason} -> {error, {schema_copy_failed, Reason}}
     end.
 
+%% Elenca le 10 tabelle del sistema con tipo di copia e campi.
 table_specs() ->
     [{users, disc_copies,
       [{attributes, [username, credentials]}]},
@@ -179,7 +183,7 @@ ensure_local_copy(Name, CopyType) ->
 %% Al riavvio Mnesia carica da disco una tabella solo se sa che la copia
 %% locale e' la piu' recente; se gli altri nodi non tornano entro il
 %% timeout il caricamento viene forzato (va segnalato: si perdono le
-%% eventuali scritture fatte altrove dopo la caduta di questo nodo).
+%% eventuali scritture fatte altrove dopo la caduta di questo nodo)
 wait_for_tables() ->
     Tables = [Name || {Name, _, _} <- table_specs()],
     case mnesia:wait_for_tables(Tables, ?TABLE_LOAD_TIMEOUT_MS) of

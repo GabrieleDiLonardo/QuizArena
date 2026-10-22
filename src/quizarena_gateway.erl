@@ -4,8 +4,6 @@
 -export([start_link/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
--define(PIN_GENERATION_ATTEMPTS, 20).
-
 %% Punto di ingresso dei nodi Java. Il gateway non esegue le richieste:
 %% per ognuna avvia un processo dedicato, cosi' una room lenta o una
 %% transazione Mnesia non bloccano le richieste degli altri utenti.
@@ -75,10 +73,10 @@ handle_request({get_history, User}, _JavaPid)
 handle_request({create_room, QuizId, HostUsername, Visibility}, JavaPid)
   when is_tuple(QuizId), is_list(HostUsername),
        (Visibility =:= public orelse Visibility =:= private) ->
-    create_room(QuizId, HostUsername, JavaPid, Visibility);
+    quizarena_rooms:create(QuizId, HostUsername, JavaPid, Visibility);
 handle_request({create_room, QuizId, HostUsername}, JavaPid)
   when is_tuple(QuizId), is_list(HostUsername) ->
-    create_room(QuizId, HostUsername, JavaPid, public);
+    quizarena_rooms:create(QuizId, HostUsername, JavaPid, public);
 handle_request({cancel_room, Pin}, JavaPid) when is_list(Pin) ->
     room_gen_server:cancel(Pin, JavaPid);
 handle_request(list_rooms, _JavaPid) ->
@@ -143,66 +141,3 @@ safe_call(Fun) ->
         exit:Reason -> {error, {call_failed, Reason}};
         Class:Reason -> {error, {call_failed, {Class, Reason}}}
     end.
-
-create_room(QuizId, HostUsername, HostPid, Visibility) ->
-    try_create_room(QuizId, HostUsername, HostPid, Visibility,
-                    ?PIN_GENERATION_ATTEMPTS).
-
-try_create_room(_QuizId, _HostUsername, _HostPid, _Visibility, 0) ->
-    {error, pin_generation_failed};
-try_create_room(QuizId, HostUsername, HostPid, Visibility, AttemptsLeft) ->
-    Pin = generate_pin(),
-    case global:whereis_name({room, Pin}) of
-        undefined ->
-            open_session_and_start_room(
-                Pin, QuizId, HostUsername, HostPid, Visibility, AttemptsLeft);
-        _RoomPid ->
-            try_create_room(QuizId, HostUsername, HostPid, Visibility,
-                            AttemptsLeft - 1)
-    end.
-
-open_session_and_start_room(Pin, QuizId, HostUsername, HostPid,
-                            Visibility, AttemptsLeft) ->
-    case quizarena_db:open_session(Pin, QuizId, HostUsername) of
-        {ok, SessionId, _QuestionCount} ->
-            RoomArgs = #{pin => Pin, session_id => SessionId,
-                         host_username => HostUsername, host_pid => HostPid,
-                         visibility => Visibility},
-            case safe_start_room(RoomArgs) of
-                {ok, _RoomPid} ->
-                    {ok, Pin};
-                {error, {room_already_registered, Pin}} ->
-                    retry_after_rollback(SessionId, QuizId, HostUsername,
-                                         HostPid, Visibility, AttemptsLeft);
-                {error, Reason} ->
-                    room_start_error_after_rollback(SessionId, Reason)
-            end;
-        {error, pin_taken} ->
-            try_create_room(QuizId, HostUsername, HostPid, Visibility,
-                            AttemptsLeft - 1);
-        {error, Reason} ->
-            {error, Reason}
-    end.
-
-safe_start_room(RoomArgs) ->
-    try room_sup:start_room(RoomArgs)
-    catch Class:Reason -> {error, {Class, Reason}} end.
-
-retry_after_rollback(SessionId, QuizId, HostUsername, HostPid, Visibility,
-                     AttemptsLeft) ->
-    case quizarena_db:abort_session(SessionId) of
-        ok -> try_create_room(QuizId, HostUsername, HostPid, Visibility,
-                              AttemptsLeft - 1);
-        {error, RollbackReason} -> {error, {rollback_failed, RollbackReason}}
-    end.
-
-room_start_error_after_rollback(SessionId, StartReason) ->
-    case quizarena_db:abort_session(SessionId) of
-        ok -> {error, {room_start_failed, StartReason}};
-        {error, RollbackReason} ->
-            {error, {room_start_failed, StartReason,
-                     rollback_failed, RollbackReason}}
-    end.
-
-generate_pin() ->
-    integer_to_list(100000 + rand:uniform(900000) - 1).
