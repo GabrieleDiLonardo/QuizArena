@@ -1,11 +1,3 @@
-// ===== Log helper =====
-const log = (msg) => {
-    const el = document.getElementById('log');
-    if (!el) return;
-    el.innerHTML += `<div>${new Date().toLocaleTimeString()} — ${msg}</div>`;
-    el.scrollTop = el.scrollHeight;
-};
-
 // ===== WebSocket =====
 const ws = new QuizWsClient(handleMessage);
 ws.connect();
@@ -56,8 +48,6 @@ function sendRejoin(pin) {
 
 // ===== Gestione messaggi dal server =====
 function handleMessage(msg) {
-    log('← ' + JSON.stringify(msg));
-
     if (msg.type === 'connected') {
         const savedPin = localStorage.getItem('qa_pin');
         if (savedPin) {
@@ -127,13 +117,7 @@ function handleMessage(msg) {
 
 // ===== Gestione eventi di gioco =====
 function handleEvent(ev) {
-    if (ev.type === 'player_joined') {
-        log(`Entrato: ${ev.username}`);
-    } else if (ev.type === 'player_disconnected') {
-        log(`Uscito: ${ev.username}`);
-    } else if (ev.type === 'player_rejoined') {
-        log(`Rientrato: ${ev.username}`);
-    } else if (ev.type === 'host_disconnected') {
+    if (ev.type === 'host_disconnected') {
         showHostNotice('L\'host si è disconnesso: attendi fino a '
             + Math.round(ev.grace_ms / 1000) + 's che rientri…');
     } else if (ev.type === 'host_rejoined' || ev.type === 'room_recovered') {

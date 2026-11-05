@@ -35,15 +35,6 @@
     background: #faf9ff;
 }
 
-.session-id {
-    display: block;
-    margin-top: 4px;
-    color: #777;
-    font-size: 12px;
-    font-family: monospace;
-    overflow-wrap: anywhere;
-}
-
 .quiz-title {
     color: #2f2a55;
 }

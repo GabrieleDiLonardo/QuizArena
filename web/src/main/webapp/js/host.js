@@ -1,13 +1,5 @@
 'use strict';
 
-// ===== Log helper =====
-const log = (msg) => {
-    const el = document.getElementById('log');
-    if (!el) return;
-    el.innerHTML += `<div>${new Date().toLocaleTimeString()} — ${msg}</div>`;
-    el.scrollTop = el.scrollHeight;
-};
-
 // ===== WebSocket =====
 const ws = new QuizWsClient(handleMessage);
 ws.connect();
@@ -77,8 +69,6 @@ document.querySelectorAll('.cancel-room-btn').forEach(btn => {
 
 // ===== Messaggi dal server =====
 function handleMessage(msg) {
-    log('← ' + JSON.stringify(msg));
-
     if (msg.type === 'connected') {
         const savedPin = localStorage.getItem(HOST_PIN_KEY);
         if (savedPin) {
@@ -143,7 +133,6 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'room_recovering') {
-        log('Server della partita non raggiungibile: ripristino in corso…');
         return;
     }
     if (msg.type === 'event') {

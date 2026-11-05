@@ -1,9 +1,3 @@
-const log = (msg) => {
-    const el = document.getElementById('log');
-    el.innerHTML += `<div>${new Date().toLocaleTimeString()} — ${msg}</div>`;
-    el.scrollTop = el.scrollHeight;
-};
-
 const ws = new QuizWsClient(handleMessage);
 ws.connect();
 
@@ -12,8 +6,6 @@ document.getElementById('refreshBtn').onclick = () => {
 };
 
 function handleMessage(msg) {
-    log('← ' + JSON.stringify(msg));
-
     // La lobby si iscrive agli aggiornamenti: il server invia la lista
     // delle stanze ogni volta che cambia, senza richieste periodiche.
     if (msg.type === 'connected' || msg.type === 'lobby_resubscribe') {
@@ -47,7 +39,6 @@ function renderRooms(rooms) {
         const canJoin = status === 'waiting';
         return `
             <div class="room-card">
-                <div class="room-pin">${escapeHtml(pin)}</div>
                 <div class="room-title">${escapeHtml(r.quiz_title || '')}</div>
                 <div class="room-meta">
                     <span>Host: <strong>${escapeHtml(r.host || '')}</strong></span>

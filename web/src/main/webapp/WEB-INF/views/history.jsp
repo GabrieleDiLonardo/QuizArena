@@ -61,7 +61,7 @@
                 <table class="history-table">
                     <thead>
                         <tr>
-                            <th scope="col">Quiz e partita</th>
+                            <th scope="col">Quiz</th>
                             <th scope="col">Ruolo</th>
                             <th scope="col">Data</th>
                             <th scope="col">Partecipanti</th>
@@ -74,7 +74,6 @@
                             <tr>
                                 <td>
                                     <strong class="quiz-title"><%= escapeHtml(entry.quizTitle()) %></strong>
-                                    <span class="session-id"><%= escapeHtml(entry.sessionId()) %></span>
                                 </td>
                                 <td>
                                     <% if (entry.hosted() && entry.score() != null) { %>
