@@ -48,7 +48,7 @@ class QuizWsClient {
             const wasConnected = this.connected;
             this.connected = false;
             if (e.code === QuizWsClient.POLICY_VIOLATION) {
-                // Sessione scaduta o logout: si torna alla pagina di login.
+                // Sessione scaduta o logout: si torna alla home.
                 location.href = contextPath + '/';
                 return;
             }

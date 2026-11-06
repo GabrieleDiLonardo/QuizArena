@@ -175,7 +175,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
     }
 
     // Logout: chiude le connessioni aperte con il token revocato. Il client
-    // riceve il codice VIOLATED_POLICY e torna alla pagina di login.
+    // riceve il codice VIOLATED_POLICY e torna alla home.
     public static void closeConnections(String jti) {
         java.util.Set<Session> sessions = CONNECTIONS_BY_TOKEN.remove(jti);
         if (sessions == null) {
