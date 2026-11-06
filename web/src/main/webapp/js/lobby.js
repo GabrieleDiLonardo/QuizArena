@@ -37,12 +37,15 @@ function renderRooms(rooms) {
         const players = r.num_players != null ? r.num_players : 0;
         const questions = r.num_questions != null ? r.num_questions : 0;
         const canJoin = status === 'waiting';
+        // I round sono un dettaglio interno: in lobby la partita e' "playing".
+        const shownStatus = (status === 'round_open' || status === 'round_closed')
+            ? 'playing' : status;
         return `
             <div class="room-card">
                 <div class="room-title">${escapeHtml(r.quiz_title || '')}</div>
                 <div class="room-meta">
                     <span>Host: <strong>${escapeHtml(r.host || '')}</strong></span>
-                    <span>Stato: <strong>${status}</strong></span>
+                    <span>Stato: <strong>${shownStatus}</strong></span>
                     <span>Giocatori: <strong>${players}</strong></span>
                     <span>Domande: <strong>${questions}</strong></span>
                 </div>
