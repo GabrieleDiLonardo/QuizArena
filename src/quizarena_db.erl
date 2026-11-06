@@ -6,7 +6,7 @@
          %% PIN e sessioni
          open_session/3, abort_session/1, mark_session_started/1,
          cancel_session/1, finish_session/2,
-         get_session/1, get_session_questions/1, sweep_orphan_sessions/0,
+         get_session/1, sweep_orphan_sessions/0,
          %% Registro stanze attive
          publish_room/1, unpublish_room/1, list_public_rooms/0,
          %% Snapshot delle partite in corso
@@ -89,7 +89,7 @@ ensure_disc_schema() ->
         {aborted, Reason} -> {error, {schema_copy_failed, Reason}}
     end.
 
-%% Elenca le 10 tabelle del sistema con tipo di copia e campi.
+%% Elenca le 9 tabelle del sistema con tipo di copia e campi.
 table_specs() ->
     [{users, disc_copies,
       [{attributes, [username, credentials]}]},
@@ -109,8 +109,6 @@ table_specs() ->
        {index, [user_id]}]},
      {session_pins, disc_copies,
       [{attributes, [pin, session_id]}]},
-     {session_questions, disc_copies,
-      [{attributes, [key, text, answers, correct, time_limit]}]},
      %% Registro delle stanze attive, letto dalla lobby. Vive solo in RAM:
      %% ogni riga e' scritta esclusivamente dalla room che la possiede.
      {open_rooms, ram_copies,
@@ -279,17 +277,13 @@ store_session(SessionId, Pin, QuizId, Title, Host, Questions) ->
     Now = erlang:system_time(millisecond),
     mnesia:write({sessions, SessionId, Pin, QuizId, Title, Host,
                   waiting, Now, undefined}),
-    lists:foldl(
-        fun({questions, _QuestionId, _QuizId, _Position, Text, Answers,
-             Correct, TimeLimit}, Number) ->
-            mnesia:write({session_questions, {SessionId, Number},
-                          Text, Answers, Correct, TimeLimit}),
-            Number + 1
-        end,
-        1,
-        Questions
-    ),
-    {ok, SessionId, length(Questions)}.
+    %% Le domande lette in questa transazione vanno direttamente alla
+    %% stanza, che le tiene nel proprio stato.
+    {ok, SessionId, Title,
+     [#{text => Text, answers => Answers, correct => Correct,
+        time_limit => TimeLimit}
+      || {questions, _QuestionId, _QuizId, _Position, Text, Answers,
+          Correct, TimeLimit} <- Questions]}.
 
 abort_session(SessionId) ->
     F = fun() ->
@@ -298,7 +292,6 @@ abort_session(SessionId) ->
               waiting, _StartedAt, _FinishedAt}] ->
                 mnesia:delete({sessions, SessionId}),
                 mnesia:delete({session_pins, Pin}),
-                delete_session_questions(SessionId),
                 ok;
             [{sessions, SessionId, _Pin, _QuizId, _Title, _Host,
               _Status, _StartedAt, _FinishedAt}] ->
@@ -336,7 +329,6 @@ cancel_session(SessionId) ->
                 mnesia:write({sessions, SessionId, Pin, QuizId, Title, Host,
                               cancelled, StartedAt, CancelledAt}),
                 mnesia:delete({session_pins, Pin}),
-                delete_session_questions(SessionId),
                 ok;
             [{sessions, SessionId, _Pin, _QuizId, _Title, _Host,
               Status, _StartedAt, _FinishedAt}] ->
@@ -363,7 +355,6 @@ finish_session(SessionId, PlayerResults) when is_list(PlayerResults) ->
                 mnesia:write({sessions, SessionId, Pin, QuizId, Title, Host,
                               finished, StartedAt, FinishedAt}),
                 mnesia:delete({session_pins, Pin}),
-                delete_session_questions(SessionId),
                 ok;
             [{sessions, SessionId, _Pin, _QuizId, _Title, _Host,
               Status, _StartedAt, _FinishedAt}] ->
@@ -386,20 +377,6 @@ get_session(SessionId) ->
         end
     end,
     transaction_result(F).
-
-get_session_questions(SessionId) ->
-    F = fun() ->
-        Rows = mnesia:match_object(
-            {session_questions, {SessionId, '_'}, '_', '_', '_', '_'}),
-        [#{text => Text, answers => Answers, correct => Correct,
-           time_limit => TimeLimit}
-         || {session_questions, {_Id, _N}, Text, Answers, Correct, TimeLimit}
-                <- lists:keysort(2, Rows)]
-    end,
-    case mnesia:transaction(F) of
-        {atomic, Questions} -> {ok, Questions};
-        {aborted, Reason} -> {error, Reason}
-    end.
 
 %% Le sessioni rimaste in waiting/playing senza una room viva sono orfane
 %% (es. riavvio del nodo durante una partita): vengono annullate e il loro
@@ -485,12 +462,6 @@ list_snapshots() ->
     [{Pin, OwnerNode, Snapshot}
      || {room_snapshots, Pin, OwnerNode, Snapshot}
             <- mnesia:dirty_match_object({room_snapshots, '_', '_', '_'})].
-
-delete_session_questions(SessionId) ->
-    SessionQuestions = mnesia:match_object(
-        {session_questions, {SessionId, '_'}, '_', '_', '_', '_'}
-    ),
-    lists:foreach(fun mnesia:delete_object/1, SessionQuestions).
 
 transaction_result(F) ->
     case mnesia:transaction(F) of

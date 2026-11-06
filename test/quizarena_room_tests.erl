@@ -230,7 +230,7 @@ concurrent_room_creation(#{two := QuizId}) ->
     stop_all(Hosts).
 
 orphan_sessions_are_swept(#{two := QuizId}) ->
-    {ok, SessionId, 2} = quizarena_db:open_session("000001", QuizId, ?HOST),
+    {ok, SessionId, _Title, [_, _]} = quizarena_db:open_session("000001", QuizId, ?HOST),
     ok = quizarena_db:sweep_orphan_sessions(),
     ?assertMatch({ok, #{status := cancelled}},
                  quizarena_db:get_session(SessionId)),

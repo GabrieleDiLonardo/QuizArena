@@ -29,8 +29,9 @@ try_create(QuizId, HostUsername, HostPid, Visibility, AttemptsLeft) ->
 open_session_and_start_room(Pin, QuizId, HostUsername, HostPid,
                             Visibility, AttemptsLeft) ->
     case quizarena_db:open_session(Pin, QuizId, HostUsername) of
-        {ok, SessionId, _QuestionCount} ->
+        {ok, SessionId, Title, Questions} ->
             RoomArgs = #{pin => Pin, session_id => SessionId,
+                         quiz_title => Title, questions => Questions,
                          host_username => HostUsername, host_pid => HostPid,
                          visibility => Visibility},
             case safe_start_room(RoomArgs) of

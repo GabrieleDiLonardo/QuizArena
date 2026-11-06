@@ -99,46 +99,37 @@ init(#{pin := Pin} = Args) ->
     end.
 
 init_registered_room(#{pin := Pin, session_id := SessionId,
+                       quiz_title := Title, questions := Questions,
                        host_username := HostUsername, host_pid := HostPid,
                        visibility := Visibility}) ->
-    case {quizarena_db:get_session(SessionId),
-          quizarena_db:get_session_questions(SessionId)} of
-        {{ok, #{quiz_title := Title}}, {ok, [_ | _] = Questions}} ->
-            link(HostPid),
-            logger:notice("[room ~s] avviato (host=~s, visibility=~p, "
-                      "~p domande)",
-                      [Pin, HostUsername, Visibility, length(Questions)]),
-            State = #{
-                pin => Pin,
-                session_id => SessionId,
-                quiz_title => Title,
-                host_username => HostUsername,
-                host_pid => HostPid,
-                host_connected => true,
-                host_grace_ref => undefined,
-                visibility => Visibility,
-                quiz_questions => Questions,
-                players => #{},
-                status => waiting,
-                current_round => 0,
-                question => undefined,
-                round_start_time => undefined,
-                round_deadline => undefined,
-                timer_ref => undefined,
-                seq => 0,
-                event_log => [],
-                recover_count => 0
-            },
-            publish(State),
-            persist(State),
-            {ok, State};
-        {{ok, _Session}, {ok, []}} ->
-            {stop, no_questions};
-        {{error, Reason}, _} ->
-            {stop, {session_load_failed, Reason}};
-        {_, {error, Reason}} ->
-            {stop, {session_load_failed, Reason}}
-    end.
+    link(HostPid),
+    logger:notice("[room ~s] avviato (host=~s, visibility=~p, "
+                  "~p domande)",
+                  [Pin, HostUsername, Visibility, length(Questions)]),
+    State = #{
+        pin => Pin,
+        session_id => SessionId,
+        quiz_title => Title,
+        host_username => HostUsername,
+        host_pid => HostPid,
+        host_connected => true,
+        host_grace_ref => undefined,
+        visibility => Visibility,
+        quiz_questions => Questions,
+        players => #{},
+        status => waiting,
+        current_round => 0,
+        question => undefined,
+        round_start_time => undefined,
+        round_deadline => undefined,
+        timer_ref => undefined,
+        seq => 0,
+        event_log => [],
+        recover_count => 0
+    },
+    publish(State),
+    persist(State),
+    {ok, State}.
 
 handle_call({join, Username, PlayerPid}, _From, State)
   when is_list(Username), Username =/= [], is_pid(PlayerPid) ->
