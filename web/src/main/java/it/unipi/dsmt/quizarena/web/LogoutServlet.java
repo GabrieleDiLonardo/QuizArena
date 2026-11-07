@@ -3,7 +3,6 @@ package it.unipi.dsmt.quizarena.web;
 import java.io.IOException;
 
 import it.unipi.dsmt.quizarena.erlang.ErlangClient;
-import it.unipi.dsmt.quizarena.erlang.ErlangContextListener;
 import it.unipi.dsmt.quizarena.erlang.ErlangServiceException;
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
@@ -45,9 +44,8 @@ public final class LogoutServlet extends HttpServlet {
     }
 
     private void revokeInCluster(AuthToken.Verified token) {
-        Object attribute = getServletContext().getAttribute(
-                ErlangContextListener.CLIENT_ATTRIBUTE);
-        if (!(attribute instanceof ErlangClient client)) {
+        ErlangClient client = WebSupport.erlangClient(getServletContext());
+        if (client == null) {
             return;
         }
         try {

@@ -51,16 +51,16 @@ handle_request({list_browsable_quizzes, Username}, _JavaPid)
   when is_list(Username) ->
     quizarena_db:list_browsable_quizzes(Username);
 handle_request({get_owned_quiz, Owner, QuizId}, _JavaPid)
-  when is_list(Owner), is_tuple(QuizId) ->
+  when is_list(Owner), is_list(QuizId) ->
     quizarena_db:get_quiz(Owner, QuizId);
 handle_request({create_quiz, Owner, Quiz}, _JavaPid)
   when is_list(Owner), is_map(Quiz) ->
     quizarena_db:create_quiz(Owner, Quiz);
 handle_request({update_quiz, Owner, QuizId, Quiz}, _JavaPid)
-  when is_list(Owner), is_tuple(QuizId), is_map(Quiz) ->
+  when is_list(Owner), is_list(QuizId), is_map(Quiz) ->
     quizarena_db:update_quiz(Owner, QuizId, Quiz);
 handle_request({delete_quiz, Owner, QuizId}, _JavaPid)
-  when is_list(Owner), is_tuple(QuizId) ->
+  when is_list(Owner), is_list(QuizId) ->
     quizarena_db:delete_quiz(Owner, QuizId);
 handle_request({get_history, User}, _JavaPid)
   when is_list(User) ->
@@ -71,12 +71,9 @@ handle_request({get_history, User}, _JavaPid)
 
 %% Stanze
 handle_request({create_room, QuizId, HostUsername, Visibility}, JavaPid)
-  when is_tuple(QuizId), is_list(HostUsername),
+  when is_list(QuizId), is_list(HostUsername),
        (Visibility =:= public orelse Visibility =:= private) ->
     quizarena_rooms:create(QuizId, HostUsername, JavaPid, Visibility);
-handle_request({create_room, QuizId, HostUsername}, JavaPid)
-  when is_tuple(QuizId), is_list(HostUsername) ->
-    quizarena_rooms:create(QuizId, HostUsername, JavaPid, public);
 handle_request({cancel_room, Pin}, JavaPid) when is_list(Pin) ->
     room_gen_server:cancel(Pin, JavaPid);
 handle_request(list_rooms, _JavaPid) ->

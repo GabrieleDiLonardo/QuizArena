@@ -18,6 +18,10 @@ const events = new EventSequencer(ws, handleEvent);
 const REJOIN_RETRY_MS = 1000;
 const MAX_REJOIN_ATTEMPTS = 20;
 let rejoinAttempts = 0;
+// Il rientro si ritenta solo se la connessione e' caduta durante una
+// partita (possibile ripristino della stanza). Se la pagina e' appena stata
+// aperta con un PIN salvato, la stanza puo' essere semplicemente finita.
+let rejoinCanWait = false;
 
 // ===== Precompila il PIN dall'URL (da lobby.html?pin=XXX) =====
 (function prefillPin() {
@@ -52,6 +56,7 @@ function handleMessage(msg) {
         const savedPin = localStorage.getItem('qa_pin');
         if (savedPin) {
             rejoinAttempts = 0;
+            rejoinCanWait = currentPin !== null;
             sendRejoin(savedPin);
         }
         return;
@@ -83,7 +88,7 @@ function handleMessage(msg) {
         if (rejoinPending) {
             rejoinPending = false;
             const savedPin = localStorage.getItem('qa_pin');
-            if (msg.code === 'room_not_found' && savedPin
+            if (msg.code === 'room_not_found' && savedPin && rejoinCanWait
                     && rejoinAttempts < MAX_REJOIN_ATTEMPTS) {
                 rejoinAttempts++;
                 showHostNotice('Partita in ripristino su un altro server…');
@@ -91,8 +96,13 @@ function handleMessage(msg) {
                 return;
             }
             showHostNotice('');
-            currentPin = null;
             localStorage.removeItem('qa_pin');
+            if (!rejoinCanWait) {
+                // PIN di una partita gia' conclusa: si resta sulla schermata
+                // iniziale senza mostrare errori.
+                return;
+            }
+            currentPin = null;
         }
         alert('Errore: ' + msg.message);
         return;
@@ -200,6 +210,11 @@ function updateTimer() {
     if (remaining <= 0) {
         timerEl.textContent = 'Tempo scaduto';
         stopTimer();
+        // Scaduto il tempo non si puo' piu' rispondere: una risposta oltre
+        // il limite verrebbe segnalata come sospetta dal server.
+        document.querySelectorAll('.answer-btn').forEach(b => {
+            b.disabled = true;
+        });
         return;
     }
     timerEl.textContent = `Tempo: ${(remaining / 1000).toFixed(1)}s`;
@@ -213,7 +228,7 @@ function stopTimer() {
 }
 
 function submitAnswer(answer, btn) {
-    if (answered) return;
+    if (answered || performance.now() >= roundDeadline) return;
     answered = true;
     stopTimer();
     document.querySelectorAll('.answer-btn').forEach(b => {
@@ -312,15 +327,10 @@ function renderLeaderboard(lb) {
         el.innerHTML = '<li>(nessun punteggio)</li>';
         return;
     }
-    el.innerHTML = lb.map(([name, score], i) =>
-        `<li><strong>#${i + 1} ${escapeHtml(name)}</strong> — ${score} punti</li>`
-    ).join('');
-}
-
-// ===== Utility =====
-function escapeHtml(s) {
-    if (s == null) return '';
-    return String(s).replace(/[&<>"']/g, c => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
+    // La classifica arriva ordinata per punteggio decrescente: a parita' di
+    // punti si condivide la posizione (1, 1, 3), come nello storico.
+    el.innerHTML = lb.map(([name, score]) => {
+        const position = lb.findIndex(([, s]) => s === score) + 1;
+        return `<li><strong>#${position} ${escapeHtml(name)}</strong> — ${score} punti</li>`;
+    }).join('');
 }

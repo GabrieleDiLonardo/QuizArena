@@ -1,6 +1,8 @@
 package it.unipi.dsmt.quizarena.erlang;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -23,6 +25,9 @@ import com.ericsson.otp.erlang.OtpErlangString;
 import com.ericsson.otp.erlang.OtpErlangTuple;
 import com.ericsson.otp.erlang.OtpMbox;
 import com.ericsson.otp.erlang.OtpNode;
+
+import static it.unipi.dsmt.quizarena.erlang.ErlangReplies.requireOk;
+import static it.unipi.dsmt.quizarena.erlang.ErlangReplies.requireOkAtom;
 
 import it.unipi.dsmt.quizarena.model.QuizId;
 
@@ -91,14 +96,6 @@ public class ErlangGameSession implements AutoCloseable {
     // ---------- API pubblica ----------
 
     public String createRoom(
-        QuizId quizId,
-        String hostUsername,
-        long timeoutMillis
-    ) throws IOException, ErlangServiceException {
-        return createRoom(quizId, hostUsername, "public", timeoutMillis);
-    }
-
-    public String createRoom(
             QuizId quizId,
             String hostUsername,
             String visibility,
@@ -107,27 +104,19 @@ public class ErlangGameSession implements AutoCloseable {
         Objects.requireNonNull(quizId, "quizId must not be null");
         requireText(hostUsername, "hostUsername");
         if (!"public".equals(visibility) && !"private".equals(visibility)) {
-            throw new IllegalArgumentException("visibility must be public or private");
+            throw new IllegalArgumentException(
+                    "visibility must be public or private");
         }
+        OtpErlangTuple request = new OtpErlangTuple(new OtpErlangObject[] {
+            new OtpErlangAtom("create_room"),
+            ErlangClient.encodeQuizId(quizId),
+            new OtpErlangString(hostUsername),
+            new OtpErlangAtom(visibility)
+        });
+        return decodeString(requireOk(sendRequest(request, timeoutMillis)),
+                "room PIN");
+    }
 
-    OtpErlangTuple erlangQuizId = new OtpErlangTuple(
-            new OtpErlangObject[] {
-                new OtpErlangLong(quizId.timestampMicros()),
-                new OtpErlangLong(quizId.uniqueInteger())
-            }
-    );
-    OtpErlangTuple request = new OtpErlangTuple(
-            new OtpErlangObject[] {
-                new OtpErlangAtom("create_room"),
-                erlangQuizId,
-                new OtpErlangString(hostUsername),
-                new OtpErlangAtom(visibility)
-            }
-    );
-
-    OtpErlangObject result = sendRequest(request, timeoutMillis);
-    return decodeStringResult(result, "room PIN");
-}
     public void join(
             String pin,
             String username,
@@ -142,7 +131,7 @@ public class ErlangGameSession implements AutoCloseable {
             new OtpErlangString(username)
         });
         OtpErlangObject result = sendRequest(request, timeoutMillis);
-        decodeOkResult(result);
+        requireOkAtom(result);
     }
 
     public void rejoin(
@@ -159,7 +148,7 @@ public class ErlangGameSession implements AutoCloseable {
             new OtpErlangString(username)
         });
         OtpErlangObject result = sendRequest(request, timeoutMillis);
-        decodeOkResult(result);
+        requireOkAtom(result);
     }
 
     // Notifica alla room che questo client (host o giocatore) lascia la
@@ -202,7 +191,7 @@ public class ErlangGameSession implements AutoCloseable {
                     new OtpErlangString(pin)
                 }
         );
-        decodeOkResult(sendRequest(request, timeoutMillis));
+        requireOkAtom(sendRequest(request, timeoutMillis));
     }
 
     public Object getPlayerState(
@@ -219,19 +208,8 @@ public class ErlangGameSession implements AutoCloseable {
                     new OtpErlangString(username)
                 }
         );
-        OtpErlangObject result = sendRequest(request, timeoutMillis);
-        if (!(result instanceof OtpErlangTuple tuple)
-                || tuple.arity() != 2) {
-            throw new IOException("Malformed player state result");
-        }
-        if (new OtpErlangAtom("error").equals(tuple.elementAt(0))) {
-            throw new ErlangServiceException(
-                    tuple.elementAt(1).toString());
-        }
-        if (!new OtpErlangAtom("ok").equals(tuple.elementAt(0))) {
-            throw new IOException("Unknown player state result");
-        }
-        return ErlangTermConverter.toJavaValue(tuple.elementAt(1));
+        return ErlangTermConverter.toJavaValue(
+                requireOk(sendRequest(request, timeoutMillis)));
     }
 
     public Object hostRejoin(
@@ -248,19 +226,8 @@ public class ErlangGameSession implements AutoCloseable {
                     new OtpErlangString(username)
                 }
         );
-        OtpErlangObject result = sendRequest(request, timeoutMillis);
-        if (!(result instanceof OtpErlangTuple tuple)
-                || tuple.arity() != 2) {
-            throw new IOException("Malformed host state result");
-        }
-        if (new OtpErlangAtom("error").equals(tuple.elementAt(0))) {
-            throw new ErlangServiceException(
-                    tuple.elementAt(1).toString());
-        }
-        if (!new OtpErlangAtom("ok").equals(tuple.elementAt(0))) {
-            throw new IOException("Unknown host state result");
-        }
-        return ErlangTermConverter.toJavaValue(tuple.elementAt(1));
+        return ErlangTermConverter.toJavaValue(
+                requireOk(sendRequest(request, timeoutMillis)));
     }
 
     public void startGame(String pin, long timeoutMillis)
@@ -270,7 +237,7 @@ public class ErlangGameSession implements AutoCloseable {
             new OtpErlangAtom("start_game"),
             new OtpErlangString(pin)
         });
-        decodeOkResult(sendRequest(request, timeoutMillis));
+        requireOkAtom(sendRequest(request, timeoutMillis));
     }
 
     public void nextRound(String pin, long timeoutMillis)
@@ -280,7 +247,7 @@ public class ErlangGameSession implements AutoCloseable {
             new OtpErlangAtom("next_round"),
             new OtpErlangString(pin)
         });
-        decodeOkResult(sendRequest(request, timeoutMillis));
+        requireOkAtom(sendRequest(request, timeoutMillis));
     }
 
     public void answer(String pin, long round, String answer,
@@ -297,7 +264,7 @@ public class ErlangGameSession implements AutoCloseable {
             new OtpErlangLong(clientElapsedMillis),
             new OtpErlangLong(roundTripMillis)
         });
-        decodeOkResult(sendRequest(request, timeoutMillis));
+        requireOkAtom(sendRequest(request, timeoutMillis));
     }
 
     public void endGame(String pin, long timeoutMillis)
@@ -307,10 +274,10 @@ public class ErlangGameSession implements AutoCloseable {
             new OtpErlangAtom("end_game"),
             new OtpErlangString(pin)
         });
-        decodeOkResult(sendRequest(request, timeoutMillis));
+        requireOkAtom(sendRequest(request, timeoutMillis));
     }
 
-    public java.util.List<Object> listRooms(long timeoutMillis)
+    public List<Object> listRooms(long timeoutMillis)
             throws IOException, ErlangServiceException {
         return decodeList(sendRequest(
                 new OtpErlangAtom("list_rooms"), timeoutMillis));
@@ -318,7 +285,7 @@ public class ErlangGameSession implements AutoCloseable {
 
     // Iscrive la mailbox agli aggiornamenti della lobby e restituisce la
     // lista corrente; le successive arrivano come eventi lobby_update.
-    public java.util.List<Object> subscribeLobby(long timeoutMillis)
+    public List<Object> subscribeLobby(long timeoutMillis)
             throws IOException, ErlangServiceException {
         return decodeList(sendRequest(
                 new OtpErlangAtom("subscribe_lobby"), timeoutMillis));
@@ -326,7 +293,7 @@ public class ErlangGameSession implements AutoCloseable {
 
     // Eventi della stanza con numero di sequenza maggiore di sinceSeq, in
     // ordine. Se la room non li conserva piu' l'errore e' too_far_behind.
-    public java.util.List<Object> eventsSince(
+    public List<Object> eventsSince(
             String pin, long sinceSeq, long timeoutMillis
     ) throws IOException, ErlangServiceException {
         requireText(pin, "pin");
@@ -338,24 +305,12 @@ public class ErlangGameSession implements AutoCloseable {
         return decodeList(sendRequest(request, timeoutMillis));
     }
 
-    private static java.util.List<Object> decodeList(OtpErlangObject result)
+    private static List<Object> decodeList(OtpErlangObject result)
             throws IOException, ErlangServiceException {
-        if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
-            throw new IOException("Malformed result from Erlang gateway");
-        }
-        if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
-            OtpErlangObject reason = t.elementAt(1);
-            if (reason instanceof OtpErlangTuple reasonTuple
-                    && reasonTuple.arity() > 0
-                    && reasonTuple.elementAt(0) instanceof OtpErlangAtom tag) {
-                throw new ErlangServiceException(tag.atomValue());
-            }
-            throw new ErlangServiceException(reason.toString());
-        }
-        if (!(t.elementAt(1) instanceof OtpErlangList list)) {
+        if (!(requireOk(result) instanceof OtpErlangList list)) {
             throw new IOException("Expected a list from Erlang gateway");
         }
-        java.util.List<Object> out = new java.util.ArrayList<>();
+        List<Object> out = new ArrayList<>();
         for (OtpErlangObject item : list) {
             out.add(ErlangTermConverter.toJavaValue(item));
         }
@@ -494,55 +449,20 @@ public class ErlangGameSession implements AutoCloseable {
 
     // ---------- Decodifica risposte ----------
 
-    private static String decodeStringResult(
-            OtpErlangObject result,
-            String expectedValue
-    ) throws IOException, ErlangServiceException {
-        if (!(result instanceof OtpErlangTuple tuple)
-                || tuple.arity() != 2) {
-            throw new IOException("Malformed result from Erlang gateway");
-        }
-
-        OtpErlangObject status = tuple.elementAt(0);
-        OtpErlangObject content = tuple.elementAt(1);
-
-        if (new OtpErlangAtom("error").equals(status)) {
-            throw new ErlangServiceException(content.toString());
-        }
-        if (!new OtpErlangAtom("ok").equals(status)) {
-            throw new IOException("Unknown result status from Erlang gateway");
-        }
-        if (content instanceof OtpErlangString value) {
+    private static String decodeString(OtpErlangObject term, String what)
+            throws IOException {
+        if (term instanceof OtpErlangString value) {
             return value.stringValue();
         }
-        if (content instanceof OtpErlangList value) {
+        if (term instanceof OtpErlangList value) {
             try {
                 return value.stringValue();
             } catch (OtpErlangException exception) {
                 throw new IOException(
-                        "Expected an Erlang string for " + expectedValue,
-                        exception
-                );
+                        "Expected an Erlang string for " + what, exception);
             }
         }
-
-        throw new IOException(
-                "Expected an Erlang string for " + expectedValue
-        );
-    }
-
-    private static void decodeOkResult(OtpErlangObject result)
-            throws IOException, ErlangServiceException {
-        if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
-            throw new IOException("Malformed result");
-        }
-        if (new OtpErlangAtom("error").equals(t.elementAt(0))) {
-            throw new ErlangServiceException(t.elementAt(1).toString());
-        }
-        if (!new OtpErlangAtom("ok").equals(t.elementAt(0))
-                || !new OtpErlangAtom("ok").equals(t.elementAt(1))) {
-            throw new IOException("Expected {ok, ok} from Erlang gateway");
-        }
+        throw new IOException("Expected an Erlang string for " + what);
     }
 
     private static String requireText(String value, String name) {

@@ -1,11 +1,14 @@
 package it.unipi.dsmt.quizarena.web;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -49,9 +52,8 @@ public final class GameWebSocketEndpoint extends Endpoint {
             GameWebSocketEndpoint.class.getName() + ".tokenId";
     // Connessioni aperte su questo Tomcat per token di login: alla revoca
     // del token (logout, anche da un altro Tomcat) vengono chiuse.
-    private static final java.util.concurrent.ConcurrentHashMap<
-            String, java.util.Set<Session>> CONNECTIONS_BY_TOKEN =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, Set<Session>>
+            CONNECTIONS_BY_TOKEN = new ConcurrentHashMap<>();
     private static final ObjectMapper JSON = new ObjectMapper();
     // Tempo concesso al cluster per ripristinare una stanza il cui nodo e'
     // caduto: elezione del leader (alcuni secondi) piu' riavvio della room.
@@ -88,9 +90,8 @@ public final class GameWebSocketEndpoint extends Endpoint {
     private HttpSession httpSession;
     private boolean stateReplayInProgress;
     private final Map<String, Long> pendingTimeProbes =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.Deque<Long> roundTripSamples =
-            new java.util.ArrayDeque<>();
+            new ConcurrentHashMap<>();
+    private final Deque<Long> roundTripSamples = new ArrayDeque<>();
     private volatile long measuredRoundTripMillis;
     private volatile ScheduledFuture<?> recoveryWatchdog;
 
@@ -177,7 +178,7 @@ public final class GameWebSocketEndpoint extends Endpoint {
     // Logout: chiude le connessioni aperte con il token revocato. Il client
     // riceve il codice VIOLATED_POLICY e torna alla home.
     public static void closeConnections(String jti) {
-        java.util.Set<Session> sessions = CONNECTIONS_BY_TOKEN.remove(jti);
+        Set<Session> sessions = CONNECTIONS_BY_TOKEN.remove(jti);
         if (sessions == null) {
             return;
         }
@@ -253,50 +254,41 @@ public final class GameWebSocketEndpoint extends Endpoint {
     // ---------- Handlers ----------
 
     private void handleCreateRoom(JsonNode message)
-        throws IOException, ErlangServiceException {
-    if (roomPin != null) {
-        sendError("room_already_created",
-                "This connection already owns a room");
-        return;
-    }
-    JsonNode quizIdNode = message.path("quizId");
-    if (!quizIdNode.isObject()) {
-        throw new IllegalArgumentException("Missing quizId");
-    }
-    QuizId quizId = new QuizId(
-            requiredLong(quizIdNode, "timestampMicros"),
-            requiredLong(quizIdNode, "uniqueInteger"));
-
-    String visibility = "public";
-    JsonNode visibilityNode = message.get("visibility");
-    if (visibilityNode != null && !visibilityNode.isNull()) {
-        if (!visibilityNode.isTextual()) {
-            sendError("invalid_request",
-                    "Visibility must be public or private");
+            throws IOException, ErlangServiceException {
+        if (roomPin != null) {
+            sendError("room_already_created",
+                    "This connection already owns a room");
             return;
         }
-        String candidate = visibilityNode.asText();
-        if (!"public".equals(candidate) && !"private".equals(candidate)) {
-            sendError("invalid_request",
-                    "Visibility must be public or private");
-            return;
-        }
-        visibility = candidate;
-    }
+        QuizId quizId = new QuizId(requiredText(message, "quizId"));
 
-    String pin = currentErlangSession().createRoom(
-            quizId,
-            authenticatedUsername,
-            visibility,
-            ERLANG_TIMEOUT_MILLIS
-    );
-    roomPin = pin;
-    role = "host";
-    sendJson(Map.of(
-            "type", "room_created",
-            "pin", pin,
-            "visibility", visibility
-    ));
+        String visibility = "public";
+        JsonNode visibilityNode = message.get("visibility");
+        if (visibilityNode != null && !visibilityNode.isNull()) {
+            String candidate = visibilityNode.asText();
+            if (!visibilityNode.isTextual()
+                    || (!"public".equals(candidate)
+                        && !"private".equals(candidate))) {
+                sendError("invalid_request",
+                        "Visibility must be public or private");
+                return;
+            }
+            visibility = candidate;
+        }
+
+        String pin = currentErlangSession().createRoom(
+                quizId,
+                authenticatedUsername,
+                visibility,
+                ERLANG_TIMEOUT_MILLIS
+        );
+        roomPin = pin;
+        role = "host";
+        sendJson(Map.of(
+                "type", "room_created",
+                "pin", pin,
+                "visibility", visibility
+        ));
     }
 
     private void handleCancelRoom()
@@ -353,26 +345,36 @@ public final class GameWebSocketEndpoint extends Endpoint {
         sendJson(Map.of("type", "rooms", "rooms", rooms));
     }
     private void handleListOwnedQuizzes()
-        throws IOException, ErlangServiceException {
-            List<QuizSummary> quizzes = client.listOwnedQuizzes(
-                    authenticatedUsername,
-                    ERLANG_TIMEOUT_MILLIS);
-            List<Map<String, Object>> out = new ArrayList<>();
-            for (QuizSummary q : quizzes) {
-                Map<String, Object> idMap = new HashMap<>();
-                idMap.put("timestampMicros", q.id().timestampMicros());
-                idMap.put("uniqueInteger", q.id().uniqueInteger());
-                Map<String, Object> item = new HashMap<>();
-                item.put("id", idMap);
-                item.put("owner", q.owner());
-                item.put("title", q.title());
-                item.put("description", q.description());
-                item.put("visibility", q.visibility());
-                item.put("isOwn", true);
-                out.add(item);
+            throws IOException, ErlangServiceException {
+        sendJson(Map.of("type", "quizzes", "quizzes", quizCards(
+                client.listOwnedQuizzes(
+                        authenticatedUsername, ERLANG_TIMEOUT_MILLIS))));
+    }
+
+    private void handleListBrowsableQuizzes()
+            throws IOException, ErlangServiceException {
+        sendJson(Map.of("type", "browsable_quizzes", "quizzes", quizCards(
+                client.listBrowsableQuizzes(
+                        authenticatedUsername, ERLANG_TIMEOUT_MILLIS))));
+    }
+
+    // Quiz nel formato atteso dalla pagina dell'host.
+    private static List<Map<String, Object>> quizCards(
+            List<QuizSummary> quizzes
+    ) {
+        List<Map<String, Object>> cards = new ArrayList<>();
+        for (QuizSummary quiz : quizzes) {
+            Map<String, Object> card = new HashMap<>();
+            card.put("id", quiz.id().value());
+            card.put("owner", quiz.owner());
+            card.put("title", quiz.title());
+            card.put("description", quiz.description());
+            card.put("visibility", quiz.visibility());
+            card.put("isOwn", quiz.isOwn());
+            cards.add(card);
         }
-    sendJson(Map.of("type", "quizzes", "quizzes", out));
-}
+        return cards;
+    }
 
     private void handleJoin(JsonNode message)
             throws IOException, ErlangServiceException {
@@ -854,26 +856,4 @@ public final class GameWebSocketEndpoint extends Endpoint {
             }
         }
     }
-
-    private void handleListBrowsableQuizzes()
-        throws IOException, ErlangServiceException {
-    List<QuizSummary> quizzes = client.listBrowsableQuizzes(
-            authenticatedUsername,
-            ERLANG_TIMEOUT_MILLIS);
-    List<Map<String, Object>> out = new ArrayList<>();
-    for (QuizSummary q : quizzes) {
-        Map<String, Object> idMap = new HashMap<>();
-        idMap.put("timestampMicros", q.id().timestampMicros());
-        idMap.put("uniqueInteger", q.id().uniqueInteger());
-        Map<String, Object> item = new HashMap<>();
-        item.put("id", idMap);
-        item.put("owner", q.owner());
-        item.put("title", q.title());
-        item.put("description", q.description());
-        item.put("visibility", q.visibility());
-        item.put("isOwn", q.isOwn());
-        out.add(item);
-    }
-    sendJson(Map.of("type", "browsable_quizzes", "quizzes", out));
-}
 }

@@ -4,8 +4,8 @@ public final class ErlangServiceException extends Exception {
 
     private final String reason;
 
-    public ErlangServiceException(String reason) {
-        super("Erlang service error: " + reason);
+    public ErlangServiceException(String reason, String detail) {
+        super("Erlang service error: " + detail);
         this.reason = reason;
     }
 

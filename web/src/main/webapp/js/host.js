@@ -17,6 +17,7 @@ const events = new EventSequencer(ws, handleEvent);
 const REJOIN_RETRY_MS = 1000;
 const MAX_REJOIN_ATTEMPTS = 20;
 let rejoinAttempts = 0;
+let rejoinCanWait = false;
 
 function sendHostRejoin(pin) {
     hostRejoinPending = true;
@@ -74,6 +75,7 @@ function handleMessage(msg) {
         if (savedPin) {
             // Pagina ricaricata o connessione persa: riprende la stanza.
             rejoinAttempts = 0;
+            rejoinCanWait = currentPin !== null;
             sendHostRejoin(savedPin);
         }
         loadMyQuizzes();
@@ -83,6 +85,7 @@ function handleMessage(msg) {
     if (msg.type === 'host_rejoined') {
         hostRejoinPending = false;
         rejoinAttempts = 0;
+        showRecoveryNotice('');
         events.reset(msg.state.seq || 0);
         restoreHostState(msg.state);
         return;
@@ -104,13 +107,15 @@ function handleMessage(msg) {
         if (hostRejoinPending) {
             hostRejoinPending = false;
             const savedPin = localStorage.getItem(HOST_PIN_KEY);
-            if (msg.code === 'room_not_found' && savedPin
+            if (msg.code === 'room_not_found' && savedPin && rejoinCanWait
                     && rejoinAttempts < MAX_REJOIN_ATTEMPTS) {
                 rejoinAttempts++;
+                showRecoveryNotice('Partita in ripristino su un altro server…');
                 setTimeout(() => sendHostRejoin(savedPin), REJOIN_RETRY_MS);
                 return;
             }
             // La stanza non esiste piu': si riparte da zero.
+            showRecoveryNotice('');
             forgetRoom();
             return;
         }
@@ -133,6 +138,8 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === 'room_recovering') {
+        showRecoveryNotice(
+            'Il server della partita non risponde: ripristino in corso…');
         return;
     }
     if (msg.type === 'event') {
@@ -266,16 +273,16 @@ function bindQuizButtons(container, quizzes) {
 function createRoomWithQuiz(quiz) {
     ws.send({
         action: 'create_room',
-        quizId: {
-            timestampMicros: quiz.id.timestampMicros,
-            uniqueInteger: quiz.id.uniqueInteger
-        },
+        quizId: quiz.id,
         visibility: roomVisibility
     });
 }
 
 // ===== Eventi di gioco =====
 function handleEvent(ev) {
+    if (ev.type === 'room_recovered') {
+        showRecoveryNotice('');
+    }
     if (ev.type === 'player_joined' || ev.type === 'player_rejoined') {
         if (!players.includes(ev.username)) players.push(ev.username);
         updatePlayerList();
@@ -302,6 +309,23 @@ function handleEvent(ev) {
         alert('Stanza annullata.');
         location.reload();
     }
+}
+
+// Avviso durante il ripristino della stanza dopo la caduta di un nodo:
+// i comandi dell'host fallirebbero finche' la stanza non e' tornata.
+function showRecoveryNotice(text) {
+    let el = document.getElementById('recoveryNotice');
+    if (!el) {
+        el = document.createElement('p');
+        el.id = 'recoveryNotice';
+        el.className = 'host-notice';
+        const anchor = document.getElementById('step1');
+        anchor.parentNode.insertBefore(el, anchor);
+    }
+    el.textContent = text;
+    el.style.display = text ? 'block' : 'none';
+    document.querySelectorAll('#nextBtn, #endBtn, .cancel-room-btn')
+        .forEach(button => { button.disabled = Boolean(text); });
 }
 
 function updatePlayerList() {
@@ -370,15 +394,10 @@ function renderLeaderboard(lb) {
         el.innerHTML = '<li>(nessun punteggio)</li>';
         return;
     }
-    el.innerHTML = lb.map(([name, score], i) =>
-        `<li><strong>#${i + 1} ${escapeHtml(name)}</strong> — ${score} punti</li>`
-    ).join('');
-}
-
-// ===== Utility =====
-function escapeHtml(s) {
-    if (s == null) return '';
-    return String(s).replace(/[&<>"']/g, c => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
+    // La classifica arriva ordinata per punteggio decrescente: a parita' di
+    // punti si condivide la posizione (1, 1, 3), come nello storico.
+    el.innerHTML = lb.map(([name, score]) => {
+        const position = lb.findIndex(([, s]) => s === score) + 1;
+        return `<li><strong>#${position} ${escapeHtml(name)}</strong> — ${score} punti</li>`;
+    }).join('');
 }

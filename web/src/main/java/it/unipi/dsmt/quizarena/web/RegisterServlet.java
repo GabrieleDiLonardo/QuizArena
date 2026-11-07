@@ -3,7 +3,6 @@ package it.unipi.dsmt.quizarena.web;
 import java.io.IOException;
 
 import it.unipi.dsmt.quizarena.erlang.ErlangClient;
-import it.unipi.dsmt.quizarena.erlang.ErlangContextListener;
 import it.unipi.dsmt.quizarena.erlang.ErlangServiceException;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.annotation.WebServlet;
@@ -15,8 +14,6 @@ import jakarta.servlet.http.HttpServletResponse;
 public final class RegisterServlet extends HttpServlet {
 
     private static final long ERLANG_TIMEOUT_MILLIS = 5000;
-
-
 
     @Override
     protected void doGet(
@@ -38,9 +35,9 @@ public final class RegisterServlet extends HttpServlet {
             HttpServletResponse response
     ) throws IOException, ServletException {
         request.setCharacterEncoding("UTF-8");
-        String username = parameter(request, "username").trim();
-        String password = parameter(request, "password");
-        String passwordConfirmation = parameter(
+        String username = WebSupport.parameter(request, "username").trim();
+        String password = WebSupport.parameter(request, "password");
+        String passwordConfirmation = WebSupport.parameter(
                 request, "passwordConfirmation");
 
         if (!password.equals(passwordConfirmation)) {
@@ -50,7 +47,8 @@ public final class RegisterServlet extends HttpServlet {
             return;
         }
 
-        ErlangClient client = requireClient(response);
+        ErlangClient client = WebSupport.requireClient(
+                getServletContext(), response);
         if (client == null) {
             return;
         }
@@ -109,28 +107,5 @@ public final class RegisterServlet extends HttpServlet {
         request.setAttribute("registrationError", message);
         request.getRequestDispatcher("/WEB-INF/views/register.jsp")
                 .forward(request, response);
-    }
-
-    private ErlangClient requireClient(HttpServletResponse response)
-            throws IOException {
-        Object clientAttribute = getServletContext().getAttribute(
-                ErlangContextListener.CLIENT_ATTRIBUTE);
-        if (clientAttribute instanceof ErlangClient client) {
-            return client;
-        }
-
-        response.sendError(
-                HttpServletResponse.SC_SERVICE_UNAVAILABLE,
-                "Erlang client is not available");
-        return null;
-    }
-
-
-    private static String parameter(
-            HttpServletRequest request,
-            String name
-    ) {
-        String value = request.getParameter(name);
-        return value == null ? "" : value;
     }
 }

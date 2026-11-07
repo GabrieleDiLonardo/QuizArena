@@ -219,8 +219,9 @@ get_user(Username) when is_list(Username) ->
 
 %% ---------- ID univoci ----------
 
+%% ID di sessioni, quiz e domande: UUID v4
 new_id() ->
-    {erlang:system_time(microsecond), erlang:unique_integer([positive])}.
+    uuid:uuid_to_string(uuid:get_v4()).
 
 %% ---------- Sessioni ----------
 
@@ -235,7 +236,7 @@ open_session(Pin, QuizId, Host) ->
 open_session(_Pin, _QuizId, _Host, 0) ->
     {error, session_id_generation_failed};
 open_session(Pin, QuizId, Host, AttemptsLeft) ->
-    SessionId = uuid:uuid_to_string(uuid:get_v4()),
+    SessionId = new_id(),
     F = fun() ->
         case mnesia:read(session_pins, Pin, write) of
             [_] -> {error, pin_taken};

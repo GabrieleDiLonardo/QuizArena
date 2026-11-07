@@ -76,9 +76,7 @@
                                     <strong class="quiz-title"><%= escapeHtml(entry.quizTitle()) %></strong>
                                 </td>
                                 <td>
-                                    <% if (entry.hosted() && entry.score() != null) { %>
-                                        Host e giocatore
-                                    <% } else if (entry.hosted()) { %>
+                                    <% if (entry.hosted()) { %>
                                         Host
                                     <% } else { %>
                                         Giocatore

@@ -12,7 +12,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import it.unipi.dsmt.quizarena.erlang.ErlangClient;
-import it.unipi.dsmt.quizarena.erlang.ErlangContextListener;
 import it.unipi.dsmt.quizarena.erlang.ErlangServiceException;
 import it.unipi.dsmt.quizarena.model.QuizDraft;
 import it.unipi.dsmt.quizarena.model.QuizId;
@@ -39,8 +38,6 @@ public final class QuizApiServlet extends HttpServlet {
     private static final long MIN_TIME_LIMIT_MILLIS = 1000;
     private static final long MAX_TIME_LIMIT_MILLIS = 300000;
     private static final ObjectMapper JSON = new ObjectMapper();
-
-
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
@@ -244,19 +241,9 @@ public final class QuizApiServlet extends HttpServlet {
         return id;
     }
 
+    // Percorso /api/quizzes/<uuid>: QuizId rifiuta un ID non valido.
     private QuizId parseQuizId(String path) {
-        String[] parts = path.substring(1).split("/");
-        if (parts.length != 2) {
-            throw new IllegalArgumentException("ID del quiz non valido");
-        }
-        try {
-            long ts = Long.parseLong(parts[0]);
-            long u = Long.parseLong(parts[1]);
-            if (ts <= 0 || u <= 0) throw new NumberFormatException();
-            return new QuizId(ts, u);
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("ID del quiz non valido");
-        }
+        return new QuizId(path.substring(1));
     }
 
     private void requireCollectionPath(HttpServletRequest request) {
@@ -278,10 +265,11 @@ public final class QuizApiServlet extends HttpServlet {
     }
 
     private ErlangClient requireClient() throws IOException {
-        Object value = getServletContext().getAttribute(
-                ErlangContextListener.CLIENT_ATTRIBUTE);
-        if (value instanceof ErlangClient client) return client;
-        throw new IOException("Erlang client is not available");
+        ErlangClient client = WebSupport.erlangClient(getServletContext());
+        if (client == null) {
+            throw new IOException("Erlang client is not available");
+        }
+        return client;
     }
 
     private void handleServiceError(

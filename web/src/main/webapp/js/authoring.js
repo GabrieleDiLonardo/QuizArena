@@ -4,9 +4,10 @@
 const MAX_QUESTIONS = 50;
 const MIN_ANSWERS = 2;
 const MAX_ANSWERS = 6;
-const MIN_TIME = 1000;
-const MAX_TIME = 300000;
-const DEFAULT_TIME = 30000;
+// Tempo limite di una domanda, in secondi (il server lo riceve in ms).
+const MIN_TIME_SECONDS = 1;
+const MAX_TIME_SECONDS = 300;
+const DEFAULT_TIME_SECONDS = 30;
 
 // ===== Stato =====
 let quizzes = [];
@@ -102,7 +103,7 @@ async function loadQuizzes() {
 }
 
 async function loadQuizDetail(quizId) {
-    const url = `api/quizzes/${quizId.timestampMicros}/${quizId.uniqueInteger}`;
+    const url = `api/quizzes/${encodeURIComponent(quizId)}`;
     return apiFetch(url);
 }
 
@@ -114,7 +115,7 @@ async function createQuiz(draft) {
 }
 
 async function updateQuiz(quizId, draft) {
-    const url = `api/quizzes/${quizId.timestampMicros}/${quizId.uniqueInteger}`;
+    const url = `api/quizzes/${encodeURIComponent(quizId)}`;
     return apiFetch(url, {
         method: 'PUT',
         body: JSON.stringify(draft)
@@ -122,7 +123,7 @@ async function updateQuiz(quizId, draft) {
 }
 
 async function deleteQuiz(quizId) {
-    const url = `api/quizzes/${quizId.timestampMicros}/${quizId.uniqueInteger}`;
+    const url = `api/quizzes/${encodeURIComponent(quizId)}`;
     return apiFetch(url, { method: 'DELETE' });
 }
 
@@ -222,7 +223,9 @@ function addQuestion(q = null) {
     el.className = 'question-editor';
     const answers = q ? q.answers : ['', ''];
     const correct = q ? q.correct : null;
-    const timeLimit = q ? (q.timeLimitMillis || DEFAULT_TIME) : DEFAULT_TIME;
+    const timeLimitSeconds = q && q.timeLimitMillis
+        ? Math.round(q.timeLimitMillis / 1000)
+        : DEFAULT_TIME_SECONDS;
 
     el.innerHTML = `
         <div class="question-header">
@@ -233,7 +236,7 @@ function addQuestion(q = null) {
         </div>
         <label>Testo</label>
         <input type="text" class="q-text" maxlength="500"
-               value="${escapeHtmlAttr(q ? q.text : '')}" required>
+               value="${escapeHtml(q ? q.text : '')}" required>
 
         <label>Risposte
             <span class="hint">(clicca il cerchio per la corretta,
@@ -244,9 +247,10 @@ function addQuestion(q = null) {
             + Aggiungi risposta
         </button>
 
-        <label>Tempo limite (ms)</label>
-        <input type="number" class="q-time" min="${MIN_TIME}" max="${MAX_TIME}"
-               value="${timeLimit}" required>
+        <label>Tempo limite (secondi)</label>
+        <input type="number" class="q-time" min="${MIN_TIME_SECONDS}"
+               max="${MAX_TIME_SECONDS}" step="1"
+               value="${timeLimitSeconds}" required>
     `;
 
     const list = el.querySelector('.answers-list');
@@ -396,16 +400,19 @@ function buildDraftFromForm() {
             throw new Error('Indica la risposta corretta con il cerchio verde');
         }
 
-        const timeLimit = parseInt(qEl.querySelector('.q-time').value, 10);
-        if (isNaN(timeLimit) || timeLimit < MIN_TIME || timeLimit > MAX_TIME) {
-            throw new Error('Tempo limite non valido');
+        const timeLimitSeconds = Number(qEl.querySelector('.q-time').value);
+        if (!Number.isInteger(timeLimitSeconds)
+                || timeLimitSeconds < MIN_TIME_SECONDS
+                || timeLimitSeconds > MAX_TIME_SECONDS) {
+            throw new Error('Tempo limite non valido: da '
+                + MIN_TIME_SECONDS + ' a ' + MAX_TIME_SECONDS + ' secondi');
         }
 
         questions.push({
             text: text,
             answers: answers,
             correct: correct,
-            timeLimitMillis: timeLimit
+            timeLimitMillis: timeLimitSeconds * 1000
         });
     });
 
@@ -428,15 +435,6 @@ async function confirmDelete(quiz) {
         showAlert('Errore: ' + e.message);
     }
 }
-
-// ===== Utility =====
-function escapeHtml(s) {
-    if (s == null) return '';
-    return String(s).replace(/[&<>"']/g, c => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
-}
-function escapeHtmlAttr(s) { return escapeHtml(s); }
 
 // ===== Init =====
 loadQuizzes();

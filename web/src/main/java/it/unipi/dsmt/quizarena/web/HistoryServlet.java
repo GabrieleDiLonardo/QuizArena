@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.util.List;
 
 import it.unipi.dsmt.quizarena.erlang.ErlangClient;
-import it.unipi.dsmt.quizarena.erlang.ErlangContextListener;
 import it.unipi.dsmt.quizarena.erlang.ErlangServiceException;
 import it.unipi.dsmt.quizarena.model.GameHistoryEntry;
 import jakarta.servlet.ServletException;
@@ -18,32 +17,17 @@ public final class HistoryServlet extends HttpServlet {
 
     private static final long ERLANG_TIMEOUT_MILLIS = 2000;
 
-
-
     @Override
     protected void doGet(
             HttpServletRequest request,
             HttpServletResponse response
     ) throws IOException, ServletException {
-        Object clientAttribute = getServletContext().getAttribute(
-                ErlangContextListener.CLIENT_ATTRIBUTE
-        );
-        if (!(clientAttribute instanceof ErlangClient client)) {
-            response.sendError(
-                    HttpServletResponse.SC_SERVICE_UNAVAILABLE,
-                    "Erlang client is not available"
-            );
+        ErlangClient client = WebSupport.requireClient(
+                getServletContext(), response);
+        if (client == null) {
             return;
         }
-
         String username = AuthenticationSession.username(request);
-        if (username == null) {
-            response.sendError(
-                    HttpServletResponse.SC_UNAUTHORIZED,
-                    "Authentication required"
-            );
-            return;
-        }
 
         try {
             List<GameHistoryEntry> history = client.getHistory(
@@ -63,5 +47,4 @@ public final class HistoryServlet extends HttpServlet {
         request.getRequestDispatcher("/WEB-INF/views/history.jsp")
                 .forward(request, response);
     }
-
 }

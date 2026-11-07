@@ -6,7 +6,6 @@
          get_state/1, get_player_state/2, get_events_since/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--define(ROUND_TIME_LIMIT, 60000).
 -define(MAX_EVENT_LOG, 200).
 %% Margine dopo la scadenza del round: una risposta data in tempo dal
 %% client ma ancora in viaggio sulla rete non viene scartata.
@@ -284,8 +283,13 @@ handle_call({answer, PlayerPid, Round, Answer, ClientElapsedMs, RttMs},
                             logger:notice("[room ~s] player ~s answered round ~p: ~p",
                                       [maps:get(pin, State), Username, Round, Answer]),
                             State2 = maybe_close_round(State1),
-                            %% Risposta confermata solo dopo la replica.
-                            persist(State2),
+                            %% Risposta confermata solo dopo la replica. Se
+                            %% ha chiuso il round, lo snapshot e' gia' stato
+                            %% scritto dall'evento round_closed.
+                            case maps:get(status, State2) of
+                                round_open -> persist(State2);
+                                _ -> ok
+                            end,
                             {reply, ok, State2}
                     end
             end;
@@ -579,7 +583,7 @@ open_next_round(State) ->
                          suspicious = false}
             end, Players),
             Q = lists:nth(Round, Questions),
-            TimeLimit = maps:get(time_limit, Q, ?ROUND_TIME_LIMIT),
+            TimeLimit = maps:get(time_limit, Q),
             Question = #{
                 id => Round,
                 text => maps:get(text, Q),

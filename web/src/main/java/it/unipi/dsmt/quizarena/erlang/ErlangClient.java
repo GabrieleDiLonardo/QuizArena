@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -25,6 +26,9 @@ import com.ericsson.otp.erlang.OtpMbox;
 import com.ericsson.otp.erlang.OtpNode;
 import com.ericsson.otp.erlang.OtpNodeStatus;
 
+import static it.unipi.dsmt.quizarena.erlang.ErlangReplies.requireOk;
+import static it.unipi.dsmt.quizarena.erlang.ErlangReplies.requireOkAtom;
+
 import it.unipi.dsmt.quizarena.model.QuizDetails;
 import it.unipi.dsmt.quizarena.model.QuizDraft;
 import it.unipi.dsmt.quizarena.model.QuizId;
@@ -45,8 +49,7 @@ public final class ErlangClient implements AutoCloseable {
     private final ScheduledExecutorService healthCheck;
     private volatile String currentBackend;
     private volatile boolean closed;
-    private final java.util.concurrent.CountDownLatch revocationsLoaded =
-            new java.util.concurrent.CountDownLatch(1);
+    private final CountDownLatch revocationsLoaded = new CountDownLatch(1);
 
     // I nodi Erlang sono elencati in ordine di preferenza: il primo e' quello
     // sulla stessa macchina, gli altri sono usati solo se non e' raggiungibile.
@@ -413,38 +416,6 @@ public final class ErlangClient implements AutoCloseable {
 
     // ---------- Helpers ----------
 
-    private static OtpErlangObject requireOk(OtpErlangObject result)
-            throws IOException, ErlangServiceException {
-        if (!(result instanceof OtpErlangTuple t) || t.arity() != 2) {
-            throw new IOException("Malformed result from Erlang gateway");
-        }
-        OtpErlangObject status = t.elementAt(0);
-        OtpErlangObject content = t.elementAt(1);
-        if (new OtpErlangAtom("error").equals(status)) {
-            throw new ErlangServiceException(decodeReason(content));
-        }
-        if (!new OtpErlangAtom("ok").equals(status)) {
-            throw new IOException("Unknown result status from Erlang gateway");
-        }
-        return content;
-    }
-
-    private static void requireOkAtom(OtpErlangObject result)
-            throws IOException, ErlangServiceException {
-        OtpErlangObject content = requireOk(result);
-        if (!new OtpErlangAtom("ok").equals(content)) {
-            throw new IOException("Expected ok from Erlang gateway");
-        }
-    }
-
-    private static String decodeReason(OtpErlangObject reason) {
-        if (reason instanceof OtpErlangAtom a) return a.atomValue();
-        if (reason instanceof OtpErlangTuple t && t.arity() > 0) {
-            return t.elementAt(0).toString();
-        }
-        return reason.toString();
-    }
-
     private OtpErlangObject sendRequest(
             OtpErlangObject requestBody, long timeoutMillis
     ) throws IOException {
@@ -577,11 +548,8 @@ public final class ErlangClient implements AutoCloseable {
 
     // ---------- Encode ----------
 
-    private static OtpErlangTuple encodeQuizId(QuizId quizId) {
-        return new OtpErlangTuple(new OtpErlangObject[]{
-                new OtpErlangLong(quizId.timestampMicros()),
-                new OtpErlangLong(quizId.uniqueInteger())
-        });
+    static OtpErlangString encodeQuizId(QuizId quizId) {
+        return new OtpErlangString(quizId.value());
     }
 
     private static OtpErlangMap encodeQuizDraft(QuizDraft quiz) {
@@ -636,29 +604,28 @@ public final class ErlangClient implements AutoCloseable {
     }
 
     private static QuizId decodeQuizId(OtpErlangObject term) throws IOException {
-        if (!(term instanceof OtpErlangTuple t) || t.arity() != 2
-                || !(t.elementAt(0) instanceof OtpErlangLong ts)
-                || !(t.elementAt(1) instanceof OtpErlangLong u)) {
-            throw new IOException("Malformed quiz id");
+        try {
+            return new QuizId(decodeString(term, "quiz id"));
+        } catch (IllegalArgumentException exception) {
+            throw new IOException("Malformed quiz id", exception);
         }
-        return new QuizId(ts.longValue(), u.longValue());
     }
 
     private static String decodeString(OtpErlangObject term, String field)
-        throws IOException {
-            if (term instanceof OtpErlangAtom a) {
-                return a.atomValue();
+            throws IOException {
+        if (term instanceof OtpErlangAtom a) {
+            return a.atomValue();
+        }
+        if (term instanceof OtpErlangString s) {
+            return s.stringValue();
+        }
+        if (term instanceof OtpErlangList l) {
+            try {
+                return l.stringValue();
+            } catch (OtpErlangException e) {
+                throw new IOException("Field is not a string: " + field, e);
             }
-            if (term instanceof OtpErlangString s) {
-                return s.stringValue();
-            }
-            if (term instanceof OtpErlangList l) {
-                try {
-                    return l.stringValue();
-                } catch (OtpErlangException e) {
-                    throw new IOException("Field is not a string: " + field, e);
-                }
-            }
+        }
         throw new IOException("Field is not a string: " + field);
     }
 
