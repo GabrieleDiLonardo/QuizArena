@@ -64,6 +64,9 @@ dalla caduta, sia per una VM qualsiasi sia per il leader.
 
 ## Deploy su macchine reali
 
+Il deploy effettivo sui container del corso, senza Docker, e' descritto
+in `deploy/vm/README.md`.
+
 Su ogni macchina, con Docker installato, si usa la stessa immagine con la
 rete dell'host, cosi' nomi e porte dei nodi Erlang coincidono con quelli
 della macchina:
